@@ -1,0 +1,16 @@
+name: DSP validation
+on:
+  push:
+  pull_request:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax
+        run: node --check audio_filter.js
+      - name: DSP numerical tests and worklet simulation
+        run: node tests/validate.cjs
