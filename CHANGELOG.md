@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — beta.2 candidate
+
+- Fix Studio sliders/knobs initially displaying their minimum instead of the DSP's actual defaults (especially Output gain, NR gain, compressor boost, tonal guard and AGC target).
+- Resolve all six modulation profiles against one canonical set of AudioWorklet/ScriptProcessor defaults.
+- Save only new per-mode user overrides; retain existing stored settings without resetting preferences. `Reset mode` clears overrides for the current mode.
+- Keep the Speech Preservation checkbox in sync after mode switches and preset reset.
+- Add a UI/DSP default regression test for all 23 controls and six modulation modes to GitHub Actions.
+- No intentional change to the NR algorithm or signal path.
+
 ## 2.0.0-beta.1 — 2026-10-16
 
 Engineering preview; not yet confirmed on a live OpenWebRX+ receiver.
