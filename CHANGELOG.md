@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.3.0-beta.1 — experimental RNNoise speech-only mode (2026-10-17)
+
+- Optional, independent **RNNoise WASM** speech enhancer in Advanced → NR engine; default remains classical spectral. Voice-only for AM / USB / LSB at 48 kHz; no RNNoise for CW, AM music, digital reception, or unsupported sample rates.
+- Loads the self-hosted, pinned Jitsi-built RNNoise 0.2 WebAssembly wrapper only on explicit opt-in. User-facing `scripts/install-rnnoise.sh` checks upstream commit and Git blob hash before installation and includes third-party BSD/Apache license notices. No remote inference service.
+- Integrates the 480-sample/10ms RNNoise PCM adapter into the existing **single AudioWorklet**, with 16-bit amplitude scaling, bounded 10-ms FIFO buffering, and no simultaneous classical NR. Preserves STFT, routing, EQ, compressor, notch, NB, modulation presets, and existing per-mode localStorage keys.
+- On missing/broken WASM or unsupported browser/context, automatically uses classical NR and exposes diagnostic state. No neural code loaded for users staying on classical NR.
+- Experimental engine choice persists per modulation and through JSON export/import; switching back to classical does not depend on reloading the receiver.
+- Adds actual WASM binary ABI/inference test and mocked AudioWorklet processing/fallback tests. GitHub CI passed; **Safari/on-air validation still pending**.
+- Existing classical-specific A/B and Match levels controls are disabled while RNNoise is selected because they do not compare the two different algorithms.
+- Note: NN runtime adds ~10 ms buffering to Studio's existing FFT/OLA path and may cause a brief load-time audio interruption.
+
 ## 2.2.0-beta.2 — candidate (2026-10-17)
 
 - Add optional **SSB voice body** (`nr_body` 0–1, default 0). Protect the 200–950 Hz speech region only when the existing speech-presence detector indicates wanted signal; no unconditional EQ boost, no AM/CW changes.
