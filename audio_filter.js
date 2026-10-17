@@ -88,6 +88,7 @@
         this.nrHistorySize=6;
         this.nrWindowFrames=Math.max(4,Math.round(0.12*rate/this.H));
         this.nrWindow=new Float32Array(this.nrBins);
+        this.nrSmooth=new Float32Array(this.nrBins);
         this.nrHistory=new Float32Array(this.nrBins*this.nrHistorySize);
         this.nrHistoryCount=0;this.nrHistoryIndex=0;this.nrWindowAge=0;
         this.mag=new Float32Array(this.N/2+1);
@@ -136,7 +137,7 @@
       }
       updateNotches(){const s=this.settings;for(let i=0;i<2;i++)this.notches[i].set(s.notch&&s.mode!=='cw'&&i<Math.min(2,s.maxNotches)?'notch':'none',this.auto[i],s.notchQ||35);}
       resetNoiseState(){
-        this.noise.fill(0);this.gains.fill(1);this.nrWindow.fill(Infinity);
+        this.noise.fill(0);this.gains.fill(1);this.nrWindow.fill(Infinity);this.nrSmooth.fill(0);
         this.nrHistory.fill(0);this.nrHistoryCount=0;this.nrHistoryIndex=0;this.nrWindowAge=0;
         this.noiseReady=false;
       }
@@ -181,7 +182,12 @@
           const speech=!!p.nr_speech_mode,floor=speech?0.16:0.09,oversub=1+6*strength;
           for(let k=0;k<bins;k++){
             const mag=this.mag[k],candidate=Math.max(1e-7,mag);
-            if(candidate<this.nrWindow[k])this.nrWindow[k]=candidate;
+            // Smooth Rayleigh magnitude dips before measuring minima; raw
+            // instantaneous minima otherwise underestimate broadband hiss.
+            const smooth=this.nrSmooth[k]?
+              0.84*this.nrSmooth[k]+0.16*candidate:candidate;
+            this.nrSmooth[k]=smooth;
+            if(smooth<this.nrWindow[k])this.nrWindow[k]=smooth;
             let minimum=this.nrWindow[k];
             for(let w=0;w<this.nrHistoryCount;w++){
               const v=this.nrHistory[w*bins+k];
