@@ -20,3 +20,5 @@ jobs:
         run: node tests/validate-mode-detection.cjs
       - name: Audio noise reduction and listening presets
         run: node tests/validate-nr-presets.cjs
+      - name: Studio 2.2 speech-aware NR regression
+        run: node tests/validate-speech-nr.cjs

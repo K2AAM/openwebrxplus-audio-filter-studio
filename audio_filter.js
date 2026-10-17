@@ -29,7 +29,7 @@
   'use strict';
   const ID = 'audio_filter';
   const BUILD = 'studio-2.0.0'; // retain compatibility with existing init.js
-  const REVISION = '2.1.0-beta.3';
+  const REVISION = '2.2.0-beta.1';
   const STORAGE = 'openwebrx-audio-filter-';
   if (window.AudioFilterPlugin && window.AudioFilterPlugin.build === BUILD) return;
 
@@ -41,7 +41,7 @@
     const defaults=Object.freeze({mode:'ssb',nb:false,nr:false,notch:false,eq:false,comp:false,
       highpassFreq:150,lowpassFreq:2800,peakingFreq:1450,peakingQ:0.85,peakingGain:0,
       gain:1,airFreq:3600,airGain:0,loudness:false,loudnessGain:0,
-      nr_alpha:0.975,nr_snr:8,nr_gain:0,nr_comb:0.2,nr_speech_mode:true,
+      nr_alpha:0.975,nr_snr:8,nr_gain:0,nr_comb:0.2,nr_speech_mode:true,nr_character:0.35,
       agcTarget:0.32,maxBoost:8,gateThresh:0.008,hangTime:0.18,recoveryTime:0.45,
       compGain:1,compHPF:150,compLPF:3000,notchQ:35,maxNotches:2});
     class Biquad {
@@ -89,6 +89,10 @@
         this.nrWindowFrames=Math.max(4,Math.round(0.12*rate/this.H));
         this.nrWindow=new Float32Array(this.nrBins);
         this.nrSmooth=new Float32Array(this.nrBins);
+        this.nrPrevGamma=new Float32Array(this.nrBins);
+        this.nrSpeechProb=new Float32Array(this.nrBins);
+        this.nrPriorSNR=new Float32Array(this.nrBins);
+        this.nrSpeechHold=new Uint16Array(this.nrBins);
         this.nrHistory=new Float32Array(this.nrBins*this.nrHistorySize);
         this.nrHistoryCount=0;this.nrHistoryIndex=0;this.nrWindowAge=0;
         this.mag=new Float32Array(this.N/2+1);
@@ -124,7 +128,7 @@
         const prev=this.settings || defaults;
         this.settings=Object.assign({},defaults,prev,s);
         const p=this.settings;
-        if((p.nr&&!prev.nr)||(p.nr&&p.mode!==prev.mode))this.resetNoiseState();
+        if((p.nr&&!prev.nr)||(p.nr&&p.mode!==prev.mode)||(p.nr&&p.nr_snr>0&&prev.nr_snr<=0))this.resetNoiseState();
         this.hp.set(p.eq?'highpass':'none',p.highpassFreq);
         this.lp.set(p.eq?'lowpass':'none',p.lowpassFreq);
         this.bass.set(p.eq&&p.loudness?'lowshelf':'none',160,0.707,p.loudnessGain||0);
@@ -138,6 +142,8 @@
       updateNotches(){const s=this.settings;for(let i=0;i<2;i++)this.notches[i].set(s.notch&&s.mode!=='cw'&&i<Math.min(2,s.maxNotches)?'notch':'none',this.auto[i],s.notchQ||35);}
       resetNoiseState(){
         this.noise.fill(0);this.gains.fill(1);this.nrWindow.fill(Infinity);this.nrSmooth.fill(0);
+        this.nrPrevGamma.fill(1);this.nrSpeechProb.fill(0);this.nrPriorSNR.fill(0);
+        this.nrSpeechHold.fill(0);
         this.nrHistory.fill(0);this.nrHistoryCount=0;this.nrHistoryIndex=0;this.nrWindowAge=0;
         this.noiseReady=false;
       }
@@ -174,57 +180,125 @@
         this.fft(false);
         for(let k=0;k<=n/2;k++){this.mag[k]=Math.hypot(this.real[k],this.imag[k]);}
         if(p.notch && (this.frameCount++%4===0))this.analyzeNotch();
-        if(p.nr){
-          // Short-time minima over ~720 ms adapt to retuning/noise-floor
-          // changes without misclassifying intermittent speech as noise.
-          const bins=this.nrBins,alpha=Math.max(0.8,Math.min(0.999,p.nr_alpha));
+        // Strength zero is a *true* bypass, even when NR output gain != 0.
+        if(p.nr && p.nr_snr>0){
+          const bins=this.nrBins;
           const strength=Math.max(0,Math.min(1,p.nr_snr/30));
-          const speech=!!p.nr_speech_mode,floor=speech?0.16:0.09,oversub=1+6*strength;
+          const character=Math.max(0,Math.min(1,p.nr_character));
+          const alpha=Math.max(0.8,Math.min(0.999,p.nr_alpha));
+          const speech=!!p.nr_speech_mode;
+          const hopSeconds=this.H/this.rate;
+
+          // Character=0: natural; Character=1: more suppression.
+          const floor=0.28-0.19*character;
+          const protection=speech?0.65-0.35*character:0.22-0.14*character;
+          const oversub=1+6*strength*(0.9+0.2*character);
+          const speechOpen=1-Math.exp(-hopSeconds/0.012);
+          const noiseClose=1-Math.exp(-hopSeconds/(0.115-0.070*character));
+          const pRise=1-Math.exp(-hopSeconds/0.025);
+          const pFall=1-Math.exp(-hopSeconds/0.160);
+          const maxSpeechHold=Math.ceil(0.65/hopSeconds);
+
+          // Pass 1: decision-directed a-priori SNR, evaluated against the
+          // PREVIOUS noise estimate. Compute ALL probabilities before using
+          // neighboring bins in the gain/tonality protection pass.
+          for(let k=0;k<bins;k++){
+            const mag=this.mag[k];
+            const noise=Math.max(1e-7,this.noise[k]);
+            const gamma=this.noiseReady?
+              Math.min(100,(mag*mag)/(noise*noise+1e-12)):1;
+            const xi=this.noiseReady?
+              Math.max(0,0.92*this.gains[k]*this.gains[k]*this.nrPrevGamma[k]
+                +0.08*Math.max(0,gamma-1)):0;
+            this.nrPriorSNR[k]=xi;
+            this.nrPrevGamma[k]=gamma;
+            // Lightweight speech-likelihood heuristic (not a trained VAD).
+            // A high xi must persist to build high speech probability.
+            const instant=Math.max(0,Math.min(1,(xi-0.65)/4.0));
+            const previous=this.nrSpeechProb[k];
+            const smoothing=instant>previous?pRise:pFall;
+            this.nrSpeechProb[k]=previous+smoothing*(instant-previous);
+          }
+
+          // Pass 2: speech-aware noise estimation and softened Wiener gain.
           for(let k=0;k<bins;k++){
             const mag=this.mag[k],candidate=Math.max(1e-7,mag);
-            // Smooth Rayleigh magnitude dips before measuring minima; raw
-            // instantaneous minima otherwise underestimate broadband hiss.
             const smooth=this.nrSmooth[k]?
               0.84*this.nrSmooth[k]+0.16*candidate:candidate;
             this.nrSmooth[k]=smooth;
-            if(smooth<this.nrWindow[k])this.nrWindow[k]=smooth;
-            let minimum=this.nrWindow[k];
-            for(let w=0;w<this.nrHistoryCount;w++){
-              const v=this.nrHistory[w*bins+k];
-              if(v>0&&v<minimum)minimum=v;
+            const oldNoise=Math.max(1e-7,this.noise[k]||smooth);
+            const protectedSpeech=this.noiseReady&&this.nrSpeechProb[k]>=0.68;
+            this.nrSpeechHold[k]=protectedSpeech?
+              Math.min(65535,this.nrSpeechHold[k]+1):0;
+
+            // Preserve syllables; after 650ms, allow a new estimate even
+            // if the probability remains high (e.g. broadband QRM jumps).
+            // This avoids infinite speech holds that permanently freeze NR.
+            if(!protectedSpeech||smooth<oldNoise||this.nrSpeechHold[k]>=maxSpeechHold){
+              if(smooth<this.nrWindow[k])this.nrWindow[k]=smooth;
             }
-            if(!this.noiseReady)this.noise[k]=minimum;
+            let minimum=Number.isFinite(this.nrWindow[k])?
+              this.nrWindow[k]:oldNoise;
+            for(let w=0;w<this.nrHistoryCount;w++){
+              const saved=this.nrHistory[w*bins+k];
+              if(saved>0&&saved<minimum)minimum=saved;
+            }
+            if(!this.noiseReady)this.noise[k]=Math.max(1e-7,minimum);
             else {
               const prev=this.noise[k];
-              const blend=minimum<prev?0.18:1-alpha;
+              const blend=minimum<prev?0.18:(1-alpha);
               this.noise[k]=Math.max(1e-7,prev+blend*(minimum-prev));
             }
-            const noise=this.noise[k],noisePower=noise*noise,signalPower=mag*mag+1e-12;
-            // Wiener-style amplitude estimate, with a bounded suppression
-            // floor to avoid musical noise. Strength=0 is true unity gain.
-            const wiener=Math.sqrt(Math.max(0,1-oversub*noisePower/signalPower));
-            let g=1-strength*(1-Math.max(floor,wiener));
+
+            const noise=this.noise[k];
+            const ratio=mag*mag/(noise*noise+1e-12);
+            const wiener=Math.sqrt(Math.max(0,1-oversub/Math.max(ratio,1e-9)));
+            let target=1-strength*(1-Math.max(floor,wiener));
+
+            const near1=Math.max(this.nrSpeechProb[Math.max(0,k-1)],
+              this.nrSpeechProb[Math.min(bins-1,k+1)]);
+            const near2=Math.max(this.nrSpeechProb[Math.max(0,k-2)],
+              this.nrSpeechProb[Math.min(bins-1,k+2)]);
+            const region=Math.max(this.nrSpeechProb[k],0.72*near1,0.42*near2);
+            target+=(1-target)*protection*region;
+
+            // Keep the original tonal guard; region protection also
+            // helps broader formants spanning adjacent FFT bins.
             if(p.nr_comb>0&&k>0&&k<bins-1){
               const neighbors=0.5*(this.mag[k-1]+this.mag[k+1])+1e-8;
-              if(mag>2.2*neighbors)g=Math.max(g,(1-strength)+strength*(0.42+0.4*p.nr_comb));
+              if(mag>2.2*neighbors)
+                target=Math.max(target,(1-strength)+strength*(0.42+0.4*p.nr_comb));
             }
-            const prevGain=this.gains[k];
-            this.gains[k]=g>prevGain?0.46*g+0.54*prevGain:0.20*g+0.80*prevGain;
+
+            const previous=this.gains[k];
+            const coefficient=target>previous?speechOpen:noiseClose;
+            this.gains[k]=previous+coefficient*(target-previous);
           }
           this.noiseReady=true;
           if(++this.nrWindowAge>=this.nrWindowFrames){
-            this.nrHistory.set(this.nrWindow,this.nrHistoryIndex*bins);
+            // A fully speech-protected window can remain +Infinity.
+            // Reuse the prior finite estimate, never poison history.
+            for(let k=0;k<bins;k++){
+              let sample=this.nrWindow[k];
+              if(!Number.isFinite(sample)||sample<=0)
+                sample=Math.max(1e-7,this.noise[k]||this.nrSmooth[k]);
+              this.nrHistory[this.nrHistoryIndex*bins+k]=sample;
+              this.nrWindow[k]=Infinity;
+            }
             this.nrHistoryIndex=(this.nrHistoryIndex+1)%this.nrHistorySize;
             if(this.nrHistoryCount<this.nrHistorySize)this.nrHistoryCount++;
-            this.nrWindow.fill(Infinity);this.nrWindowAge=0;
+            this.nrWindowAge=0;
           }
           const amp=Math.pow(10,Math.max(-12,Math.min(12,p.nr_gain))/20);
           for(let k=0;k<bins;k++){
-            let g=this.gains[k];
-            if(k>0&&k<bins-1)g=0.2*this.gains[k-1]+0.6*g+0.2*this.gains[k+1];
-            g*=amp;
-            this.real[k]*=g;this.imag[k]*=g;
-            if(k>0&&k<bins-1){this.real[n-k]*=g;this.imag[n-k]*=g;}
+            let gain=this.gains[k];
+            if(k>0&&k<bins-1)
+              gain=0.2*this.gains[k-1]+0.6*gain+0.2*this.gains[k+1];
+            gain*=amp;
+            this.real[k]*=gain;this.imag[k]*=gain;
+            if(k>0&&k<bins-1){
+              this.real[n-k]*=gain;this.imag[n-k]*=gain;
+            }
           }
         }
         this.fft(true);
@@ -285,12 +359,12 @@
   // change on explicit selection, never on automatic modulation switching.
   const listeningPresets={
     ssb:[
-      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:200,lowpassFreq:2750,peakingFreq:1650,peakingGain:2.5,nr_snr:19,nr_alpha:0.965,nr_comb:0.3,nr_speech_mode:true},flags:{eq:true,nr:true,comp:false}},
+      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:200,lowpassFreq:2750,peakingFreq:1650,peakingGain:2.5,nr_snr:19,nr_alpha:0.965,nr_comb:0.3,nr_speech_mode:true,nr_character:0.45},flags:{eq:true,nr:true,comp:false}},
       {id:'wide-ssb',label:'Wide SSB',params:{highpassFreq:85,lowpassFreq:4000,peakingFreq:1500,peakingGain:0,nr_snr:6},flags:{eq:true,nr:false}}
     ],
     am:[
       {id:'hifi-am',label:'Hi-Fi AM',params:{highpassFreq:45,lowpassFreq:11000,peakingFreq:1100,peakingGain:0,airGain:0,nr_snr:5},flags:{eq:true,nr:false,comp:false}},
-      {id:'warm-am',label:'Warm AM',params:{highpassFreq:55,lowpassFreq:7500,peakingFreq:1200,peakingGain:-1.5,airFreq:4600,airGain:-2,nr_snr:9},flags:{eq:true,nr:true,comp:false}},
+      {id:'warm-am',label:'Warm AM',params:{highpassFreq:55,lowpassFreq:7500,peakingFreq:1200,peakingGain:-1.5,airFreq:4600,airGain:-2,nr_snr:9,nr_character:0.25},flags:{eq:true,nr:true,comp:false}},
       {id:'am-comms',label:'AM Communications',params:{highpassFreq:180,lowpassFreq:3800,peakingFreq:1600,peakingGain:2,nr_snr:15,nr_alpha:0.97},flags:{eq:true,nr:true,comp:false}}
     ],
     cw:[
@@ -597,7 +671,8 @@
     ['gateThresh','Noise gate',0.001,0.05,0.001,''],['compHPF','Comp sidechain HPF',30,1200,10,' Hz'],['compLPF','Comp sidechain LPF',500,8000,100,' Hz'],['hangTime','Comp hang',0,1,0.05,' s'],['agcTarget','AGC target',0.1,0.8,0.01,''],
     ['recoveryTime','AGC recovery',0.08,2,0.02,' s'],['compGain','Comp output',0.1,2,0.05,'×'],
     ['notchQ','Notch Q',10,80,1,''],['maxNotches','Max notches',0,2,1,''],
-    ['nr_gain','NR output gain',-12,12,1,' dB'],['nr_comb','NR tonal guard',0,1,0.05,'']
+    ['nr_gain','NR output gain',-12,12,1,' dB'],['nr_comb','NR tonal guard',0,1,0.05,''],
+    ['nr_character','NR Character',0,1,0.05,'']
   ];
   const css=`
     .af2{font:12px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:#dfe6ee;background:linear-gradient(160deg,#1b242e,#111923);padding:12px;border-radius:9px;max-width:660px;min-width:330px;box-sizing:border-box;}
@@ -715,7 +790,7 @@
       <canvas id="af2-spectrum" aria-label="Input and output audio spectrum"></canvas>
       <div class="af2-line"><span>● Input &nbsp; <span style="color:#48bfe8">● Output</span></span><span id="af-studio-meta">Awaiting receiver audio route</span></div>
       <div class="af2-controls" id="af2-quick"></div><section class="af2-advanced" id="af2-advanced"><div class="af2-grid" id="af2-advanced-grid"></div></section>
-      <div class="af2-bottom"><span>Studio 2.1 beta · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
+      <div class="af2-bottom"><span>Studio 2.2 beta · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addWindow==='function'){
       try{windowNode=Plugins.addWindow(ID,'Audio Filter Studio',markup);}catch(e){errorLog(e,'Plugins.addWindow');}
     }

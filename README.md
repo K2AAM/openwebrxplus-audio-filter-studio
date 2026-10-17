@@ -1,6 +1,6 @@
-# Audio Filter Studio for OpenWebRX+ — 2.1 beta
+# Audio Filter Studio for OpenWebRX+ — 2.2 beta
 
-**Status: beta.3 candidate.** Audio routing, EQ, NR, mode detection, and automatic modulation-specific profiles were confirmed on a live OpenWebRX+ Airspy HF+ Discovery installation in October 2026. **The new 2.1 NR estimator and listening presets have automated tests but still require live on-air listening validation.** See limitations below.
+**Status: 2.2.0-beta.1 development candidate.** The 2.1 audio routing, EQ, NR and mode switching have received live OpenWebRX+ validation. The speech-aware 2.2 NR changes pass automated tests but still require on-air listening tests, especially for weak speech and fading. All new code is MIT licensed.
 
 Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 2026 contributors. **MIT license.**
 
@@ -12,6 +12,26 @@ Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 202
 - **Better observability.** `AudioFilterPlugin.status()` reports actual routes, processor type, context state, heartbeats, nonzero input samples, intercept count, and errors. The Studio UI displays `DSP ACTIVE`, `FALLBACK`, `CONNECTING`, `NOT ROUTED`, `BYPASS`, or `DSP ERROR · BYPASS`.
 - **Native receiver plugin UI.** Uses `Plugins.addButton` and `Plugins.addWindow` when available, with inline CSS and no dependencies. Advanced controls, JSON settings import/export, and original per-mode localStorage settings are retained; existing `null` overrides are treated as unset.
 - **Lifecycle handling.** `AudioFilterPlugin.disable()` first connects the original source to the destination, disconnects injected nodes, restores the original `connect` function where still owned, removes observers/event listeners, and cancels RAF/intervals.
+
+## What's new in 2.2.0-beta.1 (development branch)
+
+**Natural-sounding spectral noise reduction, no architecture changes:** The existing FFT, STFT overlap-add, Worklet/ScriptProcessor kernel, fallback dry/wet routing, and demodulator tracking are unchanged. The NR block now computes a per-bin decision-directed prior SNR, smoothed speech-likelihood heuristic, and local ±2-bin speech protection, before applying a frequency-smoothed Wiener gain. It is a lightweight heuristic, **not** a neural voice detector or implementation of any GPL DSP library.
+
+**Attack/release and noise tracking:** Wanted signal gain recovers with a 12 ms time constant, while noise attenuation comes back more slowly (90.5 ms at the default character setting). Speech-presence probability rises in 25 ms and decays in 160 ms. During confident speech the noise-floor minimum is protected against upward contamination, but the hold is bounded to 650 ms so abrupt broadband interference can still be relearned. Fully protected windows reuse a finite previous noise estimate instead of writing Infinity to history.
+
+**NR Character:** New 0–1 slider (default `0.35`) in Advanced DSP settings; it affects:
+- Minimum spectral gain `0.28 - 0.19*character` (0.28 natural → 0.09 aggressive).
+- Regional speech-protection blend `0.65 - 0.35*character` with Speech Preservation enabled (less protection with it disabled).
+- Noise suppression/release `115 - 70*character` milliseconds (115 ms natural → 45 ms aggressive).
+- Moderate power oversubtraction `1 + 6*strength*(0.9 + 0.2*character)`.
+
+**NR Strength stays separate:** `nr_snr` is unchanged and still means 0–30 suppression strength, not SNR dB. At strength 0, the NR block is skipped, **including NR output gain**, even if it has been set to a nonzero value.
+
+The Weak SSB/DX preset includes `nr_character: 0.45`; Warm AM uses `0.25`. All factory defaults resolve to `0.35`. Older saved profiles lacking this key inherit the default, while normal parameter storage, preset selection and JSON import/export automatically retain explicit Character choices.
+
+For the first on-air trial, try **NR Strength 12–18**, **NR Character 0.30–0.40**, NR output gain 0 dB, and Speech Preservation enabled. Compare with 2.1 on the same weak SSB station at matched overall volume. Increased naturalness may come at the expense of some absolute hiss attenuation.
+
+**Regression tests:** `node tests/validate-speech-nr.cjs` checks constructor-allocated and reset per-bin state at 22.05/48/96 kHz; modulation switching and NR re-enabling; true strength-zero unity behavior after NR was active; finite noise-history recovery for speech-protected windows; and NR Character's influence on suppression. The original numerical DSP, Worklet, modulation/preset, and noise-floor-jump tests also run.
 
 ## What's new in the 2.1 beta
 

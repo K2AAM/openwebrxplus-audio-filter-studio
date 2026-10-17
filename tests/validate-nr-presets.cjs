@@ -88,6 +88,7 @@ assert.equal(selected(),'custom','Legacy settings must remain custom, not be dis
 assert.equal(apply('weak-dx'),true);
 assert.equal(selected(),'weak-dx');
 assert.equal(storage.ssb.nr_snr,19);
+assert.equal(storage.ssb.nr_character,0.45,'Weak SSB preset must persist its NR Character');
 assert.equal(flags.eq,true);
 assert.equal(flags.nr,true);
 ctx.mode='am';ctx.settings={};
@@ -95,6 +96,7 @@ assert.equal(apply('hifi-am'),true);
 assert.equal(storage.am.lowpassFreq,11000);
 assert.equal(storage.ssb.nr_snr,19,'AM preset must not overwrite saved SSB profile');
 assert.equal(flags.nr,false,'Explicit Hi-Fi preset may disable NR');
+assert.equal(storage.am.nr_character,undefined,'Older presets without Character should inherit factory default');
 ctx.mode='cw';ctx.settings={};
 assert.equal(apply('cw-narrow'),true);
 assert.equal(storage.cw.highpassFreq,470);

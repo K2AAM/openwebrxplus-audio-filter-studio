@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.0-beta.1 — in development (2026-10-17)
+
+- **No audio graph changes:** preserve existing FFT, 50% hop, overlap-add and intrinsic latency, single AudioWorklet, fail-open routing, preset storage, and modulation detection.
+- Add per-frequency-bin decision-directed `nrPriorSNR` (ξ), previous posterior SNR (`nrPrevGamma`), and smoothed speech-presence probability (`nrSpeechProb`). All state arrays are allocated only in the constructor.
+- Speech-presence rise/decay constants: 25/160 ms. Noise estimator protects probable speech against rapid upward contamination and expires protective holds after 650 ms so sustained broadband interference can still be acquired.
+- Replace fixed per-frame gain smoothing with sample-rate-invariant 12 ms speech recovery and Character-adjustable noise close/release (~90.5 ms at default). Add ±2-bin local speech-region preservation to the original tonal guard.
+- Introduce `nr_character` 0–1 (default 0.35) as a standard saved, exported, imported, and preset-compatible slider. Character affects gain floor, protection, slow noise closing, and mild power oversubtraction independently of NR Strength.
+- Preserve true bypass at NR Strength=0 even when NR output gain is nonzero; reset estimated speech/noise state on enabling NR, changing modulation, or moving Strength from 0 to positive.
+- Add `tests/validate-speech-nr.cjs` to CI for constructor-only state allocations, reinitialization, strength-zero unity, finite sliding-window history, and Character effect. Existing tests and synthetic noise-reacquisition checks pass.
+- Awaiting live-receiver speech intelligibility and artifact evaluation before release.
+
 ## 2.1.0-beta.3 — 2026-10-17
 
 - Add adaptive 720-ms minimum-statistics spectral noise estimation with smoothed bin magnitudes and bounded Wiener-style suppression; NR strength has a true zero endpoint.
