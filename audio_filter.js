@@ -276,13 +276,49 @@
       comp:enabled.comp,loudness:enabled.loudness
     });
   }
-  function readReceiverMode(){try{
-    if(window.UI && typeof UI.getDemodulator==='function'){const d=UI.getDemodulator();if(d&&typeof d.get_modulation==='function')return normalizeMode(d.get_modulation());}
-    if(typeof window.get_demodulator==='function')return normalizeMode(window.get_demodulator());
-    if(typeof window.demodulator==='string')return normalizeMode(window.demodulator);
-    const active=document.querySelector('.modulation.selected,.modulation.active,.mode-button.active,#openwebrx-panel .active[data-mode]');
-    if(active)return normalizeMode(active.getAttribute('data-mode')||active.textContent.trim());
-  }catch(_){} return mode;}
+  function readReceiverMode(){
+    // OpenWebRX+ stores its active DemodulatorPanel on the jQuery receiver
+    // element (see htdocs/lib/DemodulatorPanel.js). Never call
+    // .demodulatorPanel() here: the getter lazily creates a panel and our
+    // plugin runs before receiver initialization.
+    try{
+      const jq=window.jQuery||window.$;
+      if(typeof jq==='function'){
+        const receiver=jq('#openwebrx-panel-receiver');
+        const panel=receiver&&receiver.length&&typeof receiver.data==='function'?receiver.data('panel'):null;
+        const demod=panel&&typeof panel.getDemodulator==='function'?panel.getDemodulator():null;
+        if(demod&&typeof demod.get_modulation==='function'){
+          const raw=demod.get_modulation();
+          if(raw)return normalizeMode(raw);
+        }
+      }
+    }catch(e){errorLog(e,'read receiver demodulator');}
+    // Secondary compatibility paths for alternate receiver builds.
+    try{
+      if(window.UI&&typeof window.UI.getDemodulator==='function'){
+        const d=window.UI.getDemodulator();
+        if(d&&typeof d.get_modulation==='function'){
+          const raw=d.get_modulation();if(raw)return normalizeMode(raw);
+        }
+      }
+      if(typeof window.get_demodulator==='function'){
+        const raw=window.get_demodulator();if(raw)return normalizeMode(raw);
+      }
+      if(typeof window.demodulator==='string'&&window.demodulator)return normalizeMode(window.demodulator);
+    }catch(e){errorLog(e,'read alternate demodulator');}
+    try{
+      // Native OpenWebRX+ mode buttons use .highlighted and data-modulation.
+      // Rig skins may hide these buttons but leave the receiver panel intact.
+      const active=document.querySelector(
+        '#openwebrx-panel-receiver .openwebrx-demodulator-button.highlighted[data-modulation]'
+      );
+      if(active){
+        const raw=active.getAttribute('data-modulation');
+        if(raw)return normalizeMode(raw);
+      }
+    }catch(e){errorLog(e,'read receiver mode button');}
+    return mode;
+  }
   function loadSettings(){
     for(const [k,v] of Object.entries(persistentKeys))enabled[k]=safeStorageGet(STORAGE+v)==='true';
     try{const obj=JSON.parse(safeStorageGet(STORAGE+'settings')||'{}');
