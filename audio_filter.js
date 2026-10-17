@@ -29,7 +29,7 @@
   'use strict';
   const ID = 'audio_filter';
   const BUILD = 'studio-2.0.0'; // retain compatibility with existing init.js
-  const REVISION = '2.3.0-beta.1';
+  const REVISION = '2.3.0-beta.2';
   const STORAGE = 'openwebrx-audio-filter-';
   if (window.AudioFilterPlugin && window.AudioFilterPlugin.build === BUILD) return;
 
@@ -378,7 +378,8 @@
   // change on explicit selection, never on automatic modulation switching.
   const listeningPresets={
     ssb:[
-      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:26,nr_alpha:0.970,nr_comb:0.25,nr_speech_mode:true,nr_character:0.80,nr_body:0.65},flags:{eq:true,nr:true,comp:false}},
+      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:26,nr_alpha:0.970,nr_comb:0.25,nr_speech_mode:true,nr_character:0.80,nr_body:0.65,nr_engine:'classic'},flags:{eq:true,nr:true,comp:false}},
+      {id:'weak-dx-neural',label:'Weak SSB / DX · Neural',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:27,nr_gain:0,nr_engine:'rnnoise'},flags:{eq:true,nr:true,comp:false}},
       {id:'wide-ssb',label:'Wide SSB',params:{highpassFreq:85,lowpassFreq:4000,peakingFreq:1500,peakingGain:0,nr_snr:6},flags:{eq:true,nr:false}}
     ],
     am:[
@@ -969,7 +970,7 @@
       <div class="af2-line"><span>● Input &nbsp; <span style="color:#48bfe8">● Output</span></span><span id="af-studio-meta">Awaiting receiver audio route</span></div>
       <div class="af2-compare"><button type="button" id="af2-compare" aria-pressed="false">A/B: PROCESSED</button><button type="button" id="af2-match">Match levels</button><span id="af2-compare-info" class="af2-compare-info">Enable NR to compare</span></div>
       <div class="af2-controls" id="af2-quick"></div><section class="af2-advanced" id="af2-advanced"><div class="af2-grid" id="af2-advanced-grid"></div></section>
-      <div class="af2-bottom"><span>Studio 2.3 beta.1 · Experimental RNNoise</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
+      <div class="af2-bottom"><span>Studio 2.3 beta.2 · Experimental RNNoise</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addWindow==='function'){
       try{windowNode=Plugins.addWindow(ID,'Audio Filter Studio',markup);}catch(e){errorLog(e,'Plugins.addWindow');}
     }
