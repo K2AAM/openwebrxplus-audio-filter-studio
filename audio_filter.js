@@ -275,6 +275,23 @@
     wfm:{highpassFreq:35,lowpassFreq:15000,nr_snr:3,maxNotches:0},
     digital:{highpassFreq:60,lowpassFreq:8000,nr_snr:2,maxNotches:0}
   };
+  // Named profiles apply only to their own modulation. Module enable flags
+  // change on explicit selection, never on automatic modulation switching.
+  const listeningPresets={
+    ssb:[
+      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:200,lowpassFreq:2750,peakingFreq:1650,peakingGain:2.5,nr_snr:19,nr_alpha:0.965,nr_comb:0.3,nr_speech_mode:true},flags:{eq:true,nr:true,comp:false}},
+      {id:'wide-ssb',label:'Wide SSB',params:{highpassFreq:85,lowpassFreq:4000,peakingFreq:1500,peakingGain:0,nr_snr:6},flags:{eq:true,nr:false}}
+    ],
+    am:[
+      {id:'hifi-am',label:'Hi-Fi AM',params:{highpassFreq:45,lowpassFreq:11000,peakingFreq:1100,peakingGain:0,airGain:0,nr_snr:5},flags:{eq:true,nr:false,comp:false}},
+      {id:'warm-am',label:'Warm AM',params:{highpassFreq:55,lowpassFreq:7500,peakingFreq:1200,peakingGain:-1.5,airFreq:4600,airGain:-2,nr_snr:9},flags:{eq:true,nr:true,comp:false}},
+      {id:'am-comms',label:'AM Communications',params:{highpassFreq:180,lowpassFreq:3800,peakingFreq:1600,peakingGain:2,nr_snr:15,nr_alpha:0.97},flags:{eq:true,nr:true,comp:false}}
+    ],
+    cw:[
+      {id:'cw-narrow',label:'CW Narrow',params:{highpassFreq:470,lowpassFreq:780,peakingFreq:625,peakingGain:2,nr_snr:9,nr_speech_mode:false},flags:{eq:true,nr:false,notch:false}},
+      {id:'cw-wide',label:'CW Wide',params:{highpassFreq:300,lowpassFreq:1200,peakingFreq:650,peakingGain:0,nr_snr:7},flags:{eq:true,nr:false,notch:false}}
+    ]
+  };
   const persistentKeys={eq:'enabled',nr:'nr',notch:'autonotch',nb:'declick',comp:'compressor',loudness:'loudness'};
   const enabled={eq:false,nb:false,nr:false,notch:false,comp:false,loudness:false};
   let settingsStore={};
@@ -292,6 +309,37 @@
   function safeStorageSet(k,v){try{localStorage.setItem(k,v);}catch(e){errorLog(e,'localStorage');}}
   function normalizeMode(m){m=String(m||'ssb').toLowerCase();if(m==='lsb'||m==='usb')return 'ssb';if(m==='fm')return 'nfm';if(['dmr','ysf','dstar','nxdn','m17','p25','freedv'].includes(m))return 'digital';return presets[m]?m:'ssb';}
   function cleanProfile(obj){return Object.fromEntries(Object.entries(obj||{}).filter(([,value])=>value!==null&&value!==undefined));}
+  function choicesForMode(m=mode){
+    return [{id:'default',label:'Factory '+String(m).toUpperCase(),params:{},flags:null},...(listeningPresets[m]||[])];
+  }
+  function selectedListeningPreset(){
+    const entries=Object.entries(cleanProfile(settings));
+    for(const preset of choicesForMode()){
+      const params=Object.entries(preset.params);
+      if(entries.length===params.length&&params.every(([key,value])=>settings[key]===value))return preset.id;
+    }
+    return 'custom';
+  }
+  function refreshPresetSelector(){
+    const selector=panel&&panel.querySelector('#af2-preset');
+    if(!selector)return;
+    selector.replaceChildren();
+    const manual=document.createElement('option');manual.value='custom';manual.textContent='Custom (manual)';selector.appendChild(manual);
+    for(const preset of choicesForMode()){
+      const option=document.createElement('option');option.value=preset.id;option.textContent=preset.label;selector.appendChild(option);
+    }
+    selector.value=selectedListeningPreset();
+  }
+  function applyListeningPreset(id){
+    const preset=choicesForMode().find(p=>p.id===id);
+    if(!preset)return false;
+    settings=cleanProfile(preset.params);saveSettings();
+    if(preset.flags)for(const [key,value] of Object.entries(preset.flags)){
+      if(!Object.prototype.hasOwnProperty.call(enabled,key))continue;
+      enabled[key]=!!value;safeStorageSet(STORAGE+persistentKeys[key],String(!!value));
+    }
+    syncSettings();refreshSliders();return true;
+  }
   // Store only user overrides, not copied defaults: future versions can revise
   // presets without silently freezing old values into localStorage.
   function resolveModeSettings(currentMode=mode, overrides=settings){
@@ -360,7 +408,7 @@
     mode=readReceiverMode();settings=cleanProfile(settingsStore[mode]);
   }
   function saveSettings(){settingsStore[mode]=Object.assign({},settings);safeStorageSet(STORAGE+'settings',JSON.stringify(settingsStore));}
-  function updateParameter(key,value){settings[key]=value;saveSettings();syncSettings();}
+  function updateParameter(key,value){settings[key]=value;saveSettings();syncSettings();refreshPresetSelector();}
   function syncSettings(){
     const p=currentDSPSettings();
     for(const r of routes){
@@ -534,7 +582,7 @@
     renderStatus();
   }
   const sliders=[
-    ['nr_snr','NR threshold',0,30,1,' dB'],['nr_alpha','NR smoothing',0.9,0.999,0.001,''],
+    ['nr_snr','NR strength',0,30,1,''],['nr_alpha','NR smoothing',0.9,0.999,0.001,''],
     ['maxBoost','Comp boost',1,25,1,'×'],['gain','Output',0,2,0.05,'×'],
     ['highpassFreq','High-pass',20,800,10,' Hz'],['lowpassFreq','Low-pass',400,16000,100,' Hz'],
     ['peakingFreq','EQ presence',200,6000,50,' Hz'],['peakingGain','EQ gain',-18,18,0.5,' dB'],
@@ -550,6 +598,10 @@
     .af2 *{box-sizing:border-box}.af2-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
     .af2-brand{letter-spacing:.08em;font-size:11px;font-weight:800;color:#c3d2e1}.af2-status{display:flex;align-items:center;gap:7px;font-size:10px;letter-spacing:.075em;color:#adbece;font-weight:700}
     .af2-led{width:9px;height:9px;border-radius:50%;background:#e1b85c;box-shadow:0 0 7px #455}
+    .af2-presets{display:flex;align-items:center;gap:9px;margin:0 0 11px;background:#162330;border:1px solid #304050;border-radius:7px;padding:8px 10px}
+    .af2-presets label{flex:none;font-size:11px;font-weight:700;color:#b2c6d8}
+    .af2-presets select{flex:1;min-width:0;font:inherit;color:#e7f5fa;background:#101c27;border:1px solid #40566a;border-radius:5px;padding:6px}
+    .af2-presets-hint{font-size:10px;color:#819aaf;margin:-6px 0 10px}
     .af2-buttons{display:grid;grid-template-columns:repeat(5,1fr) auto;gap:6px}.af2 button{background:#202d3a;color:#bdccdc;border:1px solid #3b4a5b;border-radius:6px;padding:8px 6px;cursor:pointer;font:inherit;font-weight:650}
     .af2 button.on{background:linear-gradient(#176d73,#12505b);color:#dffffb;border-color:#45b8bd;box-shadow:inset 0 1px 0 #438589}.af2 button:focus-visible{outline:2px solid #54bdf1}
     .af2 canvas{display:block;width:100%;height:185px;border-radius:6px;background:#090e15;border:1px solid #2d3948;margin-top:11px}
@@ -607,6 +659,7 @@
   }
     const speech=panel&&panel.querySelector('#af2-speech-preservation');
     if(speech)speech.checked=resolved.nr_speech_mode!==false;
+    refreshPresetSelector();
   }
 
   function updateToggles(){if(!panel)return;for(const flag of Object.keys(enabled)){
@@ -650,11 +703,13 @@
     if(panel)return true;
     const style=document.createElement('style');style.id='af-studio-2-css';style.textContent=css;document.head.appendChild(style);
     const markup=`<div class="af2" id="af-studio-2"><div class="af2-top"><span class="af2-brand">◈ AUDIO FILTER STUDIO</span><div class="af2-status"><i class="af2-led" id="af2-led"></i><span id="af2-status">NOT ROUTED</span></div></div>
+      <div class="af2-presets"><label for="af2-preset">Listening preset</label><select id="af2-preset" aria-label="Listening preset"></select></div>
+      <div class="af2-presets-hint">Current modulation only. Applying a preset may switch EQ/NR on or off.</div>
       <div class="af2-buttons">${[['nb','NB'],['notch','Notch'],['nr','NR'],['eq','EQ'],['comp','Comp']].map(([k,t])=>`<button type="button" data-af-flag="${k}">${t}</button>`).join('')}<button type="button" id="af2-settings" aria-expanded="false" title="Advanced DSP settings">⋯</button></div>
       <canvas id="af2-spectrum" aria-label="Input and output audio spectrum"></canvas>
       <div class="af2-line"><span>● Input &nbsp; <span style="color:#48bfe8">● Output</span></span><span id="af-studio-meta">Awaiting receiver audio route</span></div>
       <div class="af2-controls" id="af2-quick"></div><section class="af2-advanced" id="af2-advanced"><div class="af2-grid" id="af2-advanced-grid"></div></section>
-      <div class="af2-bottom"><span>Studio 2.0 · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
+      <div class="af2-bottom"><span>Studio 2.1 beta · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addWindow==='function'){
       try{windowNode=Plugins.addWindow(ID,'Audio Filter Studio',markup);}catch(e){errorLog(e,'Plugins.addWindow');}
     }
@@ -664,6 +719,7 @@
     statusEl=panel.querySelector('#af2-status');ledEl=panel.querySelector('#af2-led');canvas=panel.querySelector('#af2-spectrum');canvasCtx=canvas.getContext('2d');
     const quick=panel.querySelector('#af2-quick'),adv=panel.querySelector('#af2-advanced-grid');
     for(let i=0;i<sliders.length;i++){(i<4?quick:adv).appendChild(makeSlider(sliders[i],i>=4));}
+    listen(panel.querySelector('#af2-preset'),'change',e=>applyListeningPreset(e.currentTarget.value));
     for(const b of panel.querySelectorAll('[data-af-flag]'))listen(b,'click',()=>setFlag(b.dataset.afFlag,!enabled[b.dataset.afFlag]));
     listen(panel.querySelector('#af2-settings'),'click',e=>{const a=panel.querySelector('#af2-advanced');a.classList.toggle('open');e.currentTarget.setAttribute('aria-expanded',String(a.classList.contains('open')));});
     listen(panel.querySelector('#af2-bypass'),'click',e=>{userDisabled=!userDisabled;e.currentTarget.textContent=userDisabled?'Enable':'Bypass';
@@ -699,7 +755,7 @@
     }else{
       const b=document.createElement('button');b.id='af2-floating-toggle';b.textContent='AF';b.style.cssText='position:fixed;bottom:10px;left:10px;z-index:10001;background:#163d49;color:white;padding:8px';document.body.appendChild(b);listen(b,'click',openPanel);
     }
-    updateToggles();renderStatus();return true;
+    updateToggles();refreshPresetSelector();renderStatus();return true;
   }
   function init(){if(initialized)return true;if(destroyed)return false;
     loadSettings();installHook();
@@ -723,7 +779,8 @@
     initialized=false;
   }
   const api={build:BUILD,revision:REVISION,init,disable,status,attach,detachAll:()=>[...routes].forEach(detachRoute),
-    setFlag,settings:()=>currentDSPSettings(),getMode:()=>mode};
+    setFlag,settings:()=>currentDSPSettings(),getMode:()=>mode,
+    applyPreset:applyListeningPreset,listPresets:()=>choicesForMode().map(p=>({id:p.id,label:p.label}))};
   window.AudioFilterPlugin=api;
   if(window.Plugins&&Plugins.audio_filter){
     Plugins.audio_filter.no_css=true;
