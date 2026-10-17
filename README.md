@@ -83,6 +83,8 @@ The regular `AudioNode.prototype.connect` interception remains the **automatic f
 - CW: 350–950 Hz EQ defaults; auto-notch is disabled to protect CW tones.
 - LocalStorage compatibility: `openwebrx-audio-filter-enabled`, `-nr`, `-autonotch`, `-declick`, `-compressor`, `-loudness`, and `-settings` with per-mode `ssb`, `am`, `cw`, `nfm`, `wfm`, `digital` objects.
 - Parameter changes do not enable a module automatically: turn on NB / Notch / NR / EQ / Comp in the top row. All filters run locally on **each listener's browser**, not on the SDR host.
+- Studio initializes visible knobs/sliders from the **same effective settings** that are applied to the DSP (core defaults → modulation preset → saved user overrides). This corrects the earlier bug where untouched controls could misleadingly show their minimum.
+- Profiles from older builds still load. `Reset mode` clears saved parameter overrides for the **current** modulation and restores its effective defaults; enable/disable buttons are global and unchanged by Reset mode. Newly saved profiles store user overrides instead of freezing every factory default.
 
 ## Known limitations and safety
 
@@ -98,7 +100,8 @@ The regular `AudioNode.prototype.connect` interception remains the **automatic f
 ## Test notes
 
 - `node --check audio_filter.js`
-- `node validate.cjs` runs the same DSP kernel at 22.05, 32, 44.1, 48, 96 kHz and evaluates the generated AudioWorklet code with simulated audio quanta.
+- `node tests/validate.cjs` runs the same DSP kernel at 22.05, 32, 44.1, 48, 96 kHz and evaluates the generated AudioWorklet code with simulated audio quanta.
+- `node tests/validate-defaults.cjs` checks that all 23 Studio controls across all six modes resolve to the same values as the DSP engine, including the actual knob initialization path and saved overrides.
 - A Chromium smoke test (headless, deliberately insecure/opaque origin) verified UI creation, toggles, fail-open routing, status heartbeats, fallback processing and teardown. **A real secure-origin AudioWorklet test against OpenWebRX+ remains required.**
 
 ## Roll back
