@@ -433,6 +433,7 @@
   function applyListeningPreset(id){
     const preset=choicesForMode().find(p=>p.id===id);
     if(!preset)return false;
+    compareReference=false;compareGain=1;
     settings=cleanProfile(preset.params);saveSettings();
     if(preset.flags)for(const [key,value] of Object.entries(preset.flags)){
       if(!Object.prototype.hasOwnProperty.call(enabled,key))continue;
@@ -509,7 +510,7 @@
     mode=readReceiverMode();settings=cleanProfile(settingsStore[mode]);
   }
   function saveSettings(){settingsStore[mode]=Object.assign({},settings);safeStorageSet(STORAGE+'settings',JSON.stringify(settingsStore));}
-  function updateParameter(key,value){settings[key]=value;saveSettings();syncSettings();refreshPresetSelector();}
+  function updateParameter(key,value){settings[key]=value;compareGain=1;saveSettings();syncSettings();refreshPresetSelector();}
   function syncSettings(){
     const p=currentDSPSettings();
     for(const r of routes){
@@ -518,7 +519,8 @@
     }
     updateToggles();
   }
-  function setFlag(flag,on){enabled[flag]=!!on;safeStorageSet(STORAGE+persistentKeys[flag],String(!!on));syncSettings();}
+  function setFlag(flag,on){enabled[flag]=!!on;if(flag==='nr'){compareReference=false;compareGain=1;}
+    safeStorageSet(STORAGE+persistentKeys[flag],String(!!on));syncSettings();}
 
   function makeWorkletSource(){
     return `"use strict";\nconst DSPCore=(${createDSPCore.toString()})();\n`+
@@ -678,7 +680,7 @@
   }
   function poll(){
     if(destroyed)return;
-    const next=readReceiverMode();if(next!==mode){saveSettings();mode=next;settings=cleanProfile(settingsStore[mode]);syncSettings();refreshSliders();}
+    const next=readReceiverMode();if(next!==mode){saveSettings();mode=next;compareReference=false;compareGain=1;settings=cleanProfile(settingsStore[mode]);syncSettings();refreshSliders();}
     for(const r of routes){if(r.working&&Date.now()-r.lastHeartbeat>2500)bypass(r,'WATCHDOG');}
     renderStatus();
   }
@@ -718,6 +720,8 @@
     .af2-adv label{display:block;color:#9db0c3;font-size:11px}.af2-adv input{width:100%}
     .af2-bottom{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:11px;color:#8095a7;font-size:11px}
     .af2-bottom button{padding:4px 8px;font-size:10px}.af2 .af2-fail{color:#e6bc62}
+    .af2-compare{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px}.af2-compare button{padding:6px 10px}
+    .af2-compare-info{font-size:10px;color:#91a7b9;min-width:210px}
     @media(max-width:470px){.af2-controls{grid-template-columns:repeat(2,1fr)}.af2{min-width:280px}.af2-buttons{grid-template-columns:repeat(3,1fr)}}
   `;
   function formatValue(v,unit){return (v<1?Number(v).toFixed(3):v<10?Number(v).toFixed(2):Math.round(v))+unit;}
@@ -767,7 +771,7 @@
 
   function updateToggles(){if(!panel)return;for(const flag of Object.keys(enabled)){
     const el=panel.querySelector(`[data-af-flag="${flag}"]`);if(el){el.classList.toggle('on',enabled[flag]);el.setAttribute('aria-pressed',String(enabled[flag]));}
-  }}
+  }updateCompareUI();}
   function renderSpectrum(){
     if(!canvas||destroyed||!panel||panel.offsetWidth===0)return;
     const width=Math.max(200,Math.floor(canvas.clientWidth*devicePixelRatio)),height=Math.max(100,Math.floor(185*devicePixelRatio));
@@ -811,6 +815,7 @@
       <div class="af2-buttons">${[['nb','NB'],['notch','Notch'],['nr','NR'],['eq','EQ'],['comp','Comp']].map(([k,t])=>`<button type="button" data-af-flag="${k}">${t}</button>`).join('')}<button type="button" id="af2-settings" aria-expanded="false" title="Advanced DSP settings">⋯</button></div>
       <canvas id="af2-spectrum" aria-label="Input and output audio spectrum"></canvas>
       <div class="af2-line"><span>● Input &nbsp; <span style="color:#48bfe8">● Output</span></span><span id="af-studio-meta">Awaiting receiver audio route</span></div>
+      <div class="af2-compare"><button type="button" id="af2-compare" aria-pressed="false">A/B: PROCESSED</button><button type="button" id="af2-match">Match levels</button><span id="af2-compare-info" class="af2-compare-info">Enable NR to compare</span></div>
       <div class="af2-controls" id="af2-quick"></div><section class="af2-advanced" id="af2-advanced"><div class="af2-grid" id="af2-advanced-grid"></div></section>
       <div class="af2-bottom"><span>Studio 2.2 beta.2 · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addWindow==='function'){
@@ -823,6 +828,8 @@
     const quick=panel.querySelector('#af2-quick'),adv=panel.querySelector('#af2-advanced-grid');
     for(let i=0;i<sliders.length;i++){(i<4?quick:adv).appendChild(makeSlider(sliders[i],i>=4));}
     listen(panel.querySelector('#af2-preset'),'change',e=>applyListeningPreset(e.currentTarget.value));
+    listen(panel.querySelector('#af2-compare'),'click',toggleCompare);
+    listen(panel.querySelector('#af2-match'),'click',calibrateCompare);
     for(const b of panel.querySelectorAll('[data-af-flag]'))listen(b,'click',()=>setFlag(b.dataset.afFlag,!enabled[b.dataset.afFlag]));
     listen(panel.querySelector('#af2-settings'),'click',e=>{const a=panel.querySelector('#af2-advanced');a.classList.toggle('open');e.currentTarget.setAttribute('aria-expanded',String(a.classList.contains('open')));});
     listen(panel.querySelector('#af2-bypass'),'click',e=>{userDisabled=!userDisabled;e.currentTarget.textContent=userDisabled?'Enable':'Bypass';
@@ -840,10 +847,10 @@
           settingsStore[key]=profile;
         }
         if(obj.enabled&&typeof obj.enabled==='object')for(const flag of Object.keys(enabled)){if(typeof obj.enabled[flag]==='boolean'){enabled[flag]=obj.enabled[flag];safeStorageSet(STORAGE+persistentKeys[flag],String(enabled[flag]));}}
-        settings=cleanProfile(settingsStore[mode]);saveSettings();syncSettings();refreshSliders();
+        compareReference=false;compareGain=1;settings=cleanProfile(settingsStore[mode]);saveSettings();syncSettings();refreshSliders();
       }catch(e){errorLog(e,'import settings');renderStatus();}};input.click();
     });
-    listen(panel.querySelector('#af2-reset'),'click',()=>{settingsStore[mode]={};settings={};saveSettings();syncSettings();refreshSliders();});
+    listen(panel.querySelector('#af2-reset'),'click',()=>{settingsStore[mode]={};settings={};compareReference=false;compareGain=1;saveSettings();syncSettings();refreshSliders();});
     // Keep original optional loudness switch, without taking space in the top row.
     const loud=document.createElement('label');loud.style.cssText='display:flex;gap:7px;margin-top:9px';
     const loudCheck=document.createElement('input');loudCheck.type='checkbox';loudCheck.checked=enabled.loudness;
