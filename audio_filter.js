@@ -265,7 +265,16 @@
   // Store only user overrides, not copied defaults: future versions can revise
   // presets without silently freezing old values into localStorage.
   function resolveModeSettings(currentMode=mode, overrides=settings){
-    return Object.assign({},DSPCore.defaults,presets[currentMode],cleanProfile(overrides));
+    // The mode is runtime state, never a factory or saved-profile default.
+    return Object.assign({},DSPCore.defaults,presets[currentMode],cleanProfile(overrides),{mode:currentMode});
+  }
+  function currentDSPSettings(){
+    // Keep the public settings() API identical to the parameters actually
+    // sent to both DSP engines, including live modulation and global toggles.
+    return Object.assign({},resolveModeSettings(),{
+      mode,eq:enabled.eq,nb:enabled.nb,nr:enabled.nr,notch:enabled.notch,
+      comp:enabled.comp,loudness:enabled.loudness
+    });
   }
   function readReceiverMode(){try{
     if(window.UI && typeof UI.getDemodulator==='function'){const d=UI.getDemodulator();if(d&&typeof d.get_modulation==='function')return normalizeMode(d.get_modulation());}
@@ -287,7 +296,7 @@
   function saveSettings(){settingsStore[mode]=Object.assign({},settings);safeStorageSet(STORAGE+'settings',JSON.stringify(settingsStore));}
   function updateParameter(key,value){settings[key]=value;saveSettings();syncSettings();}
   function syncSettings(){
-    const p=Object.assign({},resolveModeSettings(),{mode,eq:enabled.eq,nb:enabled.nb,nr:enabled.nr,notch:enabled.notch,comp:enabled.comp,loudness:enabled.loudness});
+    const p=currentDSPSettings();
     for(const r of routes){
       if(r.engine){r.engine.setSettings(p);}
       if(r.processor&&r.processor.port)try{r.processor.port.postMessage({type:'settings',value:p});}catch(e){errorLog(e,'send settings');}
@@ -648,7 +657,7 @@
     initialized=false;
   }
   const api={build:BUILD,init,disable,status,attach,detachAll:()=>[...routes].forEach(detachRoute),
-    setFlag,settings:()=>resolveModeSettings(),getMode:()=>mode};
+    setFlag,settings:()=>currentDSPSettings(),getMode:()=>mode};
   window.AudioFilterPlugin=api;
   if(window.Plugins&&Plugins.audio_filter){
     Plugins.audio_filter.no_css=true;
