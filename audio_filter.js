@@ -402,7 +402,10 @@
   const workletLoads=new WeakMap();
   const rnnoiseWorkletLoads=new WeakMap();
   let rnnoiseSourcePromise=null, rnnoiseError='';
-  const RNNOISE_ASSET='/plugins/receiver/audio_filter/rnnoise-sync.js';
+  const RNNOISE_ASSET=(()=>{
+    const script=document.querySelector('script[src*="/audio_filter/audio_filter.js"]');
+    return new URL('rnnoise-sync.js',script?.src||new URL('/plugins/receiver/audio_filter/',location.href)).href;
+  })();
   const listeners=[];
   const originals={connect:AudioNode.prototype.connect};
   const originalFactories=[];
@@ -565,6 +568,7 @@
       rnnoiseError='RNNoise requires a 48 kHz audio context';updateRNNoiseUI();return;
     }
     if(!candidates.length){rnnoiseError='Waiting for 48 kHz AudioWorklet';updateRNNoiseUI();return;}
+    if(candidates.every(r=>r.rnnoiseState==='ready')){rnnoiseError='';updateRNNoiseUI();return;}
     rnnoiseError='Loading optional RNNoise module…';updateRNNoiseUI();
     try{
       const source=await fetchRnnoiseSource();
@@ -573,11 +577,12 @@
         if(!rnnoiseWorkletLoads.has(r.context)){
           const moduleUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
           const load=r.context.audioWorklet.addModule(moduleUrl)
+            .catch(e=>{rnnoiseWorkletLoads.delete(r.context);throw e;})
             .finally(()=>URL.revokeObjectURL(moduleUrl));
           rnnoiseWorkletLoads.set(r.context,load);
         }
         await rnnoiseWorkletLoads.get(r.context);
-        if(!r.destroyed&&r.processor&&r.processor.port){
+        if(!r.destroyed&&r.processor&&r.processor.port&&r.rnnoiseState!=='ready'){
           r.rnnoiseState='loading';
           r.processor.port.postMessage({type:'rnnoise-init'});
         }
