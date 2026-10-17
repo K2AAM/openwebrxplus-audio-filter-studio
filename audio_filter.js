@@ -519,7 +519,7 @@
     }
     updateToggles();
   }
-  function setFlag(flag,on){enabled[flag]=!!on;if(flag==='nr'){compareReference=false;compareGain=1;}
+  function setFlag(flag,on){enabled[flag]=!!on;compareGain=1;if(flag==='nr')compareReference=false;
     safeStorageSet(STORAGE+persistentKeys[flag],String(!!on));syncSettings();}
 
   function makeWorkletSource(){
