@@ -52,6 +52,8 @@ AudioFilterPlugin.status()
 
 Check `dspLive: true`, a current `lastHeartbeatMs` on the route, and `nonzeroInputSamples > 0` while a station is receiving. A displayed UI alone is **not** evidence of processing. `engine` should read `AudioWorklet` on HTTPS or `ScriptProcessor` if the fallback is in use. A missing route means **the receiver connected before the intercept was installed** or it uses a different playback architecture.
 
+**Modulation check:** Switch among AM, CW, and USB/LSB, then run `AudioFilterPlugin.getMode()` or `AudioFilterPlugin.settings().mode` in the browser console. The values should be `am`, `cw`, and `ssb` respectively. Native OpenWebRX+ exposes the active modulation via `$('#openwebrx-panel-receiver').data('panel').getDemodulator().get_modulation()`. The mode detector never creates an uninitialized receiver panel just to inspect it.
+
 **Audible A/B test:** Tune an SSB voice signal, enable **EQ**, and reduce **Low-pass** to ~500 Hz in Advanced. The voice should become dramatically duller. Then use the panel's **Bypass** button and compare. Return the low-pass setting to 2,800 Hz when done. Make sure you are not simultaneously hearing OpenWebRX+ audio through another tab.
 
 If a worklet reports `DSP ACTIVE` but no audible difference, inspect the route statistics and verify there is not another parallel direct audio path. `attach` does not prove or remove unknown additional paths.
