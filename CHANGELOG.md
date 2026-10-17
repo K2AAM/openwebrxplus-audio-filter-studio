@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased — beta.2 candidate
+## 2.1.0-beta.3 — 2026-10-17
+
+- Add adaptive 720-ms minimum-statistics spectral noise estimation with smoothed bin magnitudes and bounded Wiener-style suppression; NR strength has a true zero endpoint.
+- Retain existing `nr_snr` storage for backward compatibility but interpret it as **strength**, not a measured SNR-dB threshold.
+- Reset the NR noise model on enabling NR or switching modulation; retain allocation-free worklet processing.
+- Add named listening presets: Weak SSB/DX, Wide SSB, Hi-Fi AM, Warm AM, AM Communications, CW Narrow, CW Wide.
+- Apply named presets only to the current modulation; pre-existing manual settings remain intact and appear as Custom.
+- Show a preset selector in the Studio window; module toggles change only on explicit preset selection, never automatically with receiver-mode changes.
+- Add deterministic synthetic noise/weak-tone and preset state regression tests to CI. Existing routing and demodulator tracking unchanged.
+- Keep the compatibility `build` identifier while exposing `revision: '2.1.0-beta.3'`.
+
+## 2.0.x — beta.2 bugfixes
 
 - Detect AM/CW/USB/LSB and other modes from OpenWebRX+'s actual jQuery DemodulatorPanel (`#openwebrx-panel-receiver`), rather than stale or incompatible selectors; include its highlighted mode buttons as a fallback and avoid lazily creating the receiver panel before initialization.
 

@@ -1,6 +1,6 @@
-# Audio Filter Studio 2.0 for OpenWebRX+
+# Audio Filter Studio for OpenWebRX+ — 2.1 beta
 
-**Status: engineering candidate for live receiver validation.** This is a complete, standalone replacement for DL1HQH/joer123's client-side `audio_filter.js`, but it has **not** been validated on the user's actual OpenWebRX+ installation. See the limitations below before deploying.
+**Status: beta.3 candidate.** Audio routing, EQ, NR, mode detection, and automatic modulation-specific profiles were confirmed on a live OpenWebRX+ Airspy HF+ Discovery installation in October 2026. **The new 2.1 NR estimator and listening presets have automated tests but still require live on-air listening validation.** See limitations below.
 
 Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 2026 contributors. **MIT license.**
 
@@ -12,6 +12,29 @@ Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 202
 - **Better observability.** `AudioFilterPlugin.status()` reports actual routes, processor type, context state, heartbeats, nonzero input samples, intercept count, and errors. The Studio UI displays `DSP ACTIVE`, `FALLBACK`, `CONNECTING`, `NOT ROUTED`, `BYPASS`, or `DSP ERROR · BYPASS`.
 - **Native receiver plugin UI.** Uses `Plugins.addButton` and `Plugins.addWindow` when available, with inline CSS and no dependencies. Advanced controls, JSON settings import/export, and original per-mode localStorage settings are retained; existing `null` overrides are treated as unset.
 - **Lifecycle handling.** `AudioFilterPlugin.disable()` first connects the original source to the destination, disconnects injected nodes, restores the original `connect` function where still owned, removes observers/event listeners, and cancels RAF/intervals.
+
+## What's new in the 2.1 beta
+
+**New adaptive spectral NR:** The FFT processor now tracks a short-window, spectrally smoothed noise-floor minimum over approximately 720 ms and applies a Wiener-style, frequency/time-smoothed attenuation envelope. The intent is to respond to a changing HF noise floor without treating every strong speech syllable as noise. The NR strength slider uses the **same saved numerical key** (`nr_snr`) but now ranges from 0 = effectively no reduction to 30 = aggressive reduction; it's no longer a calibrated SNR-dB threshold. Existing saved numbers survive the upgrade but will sound different, so retune them.
+
+Recommended initial listening test: disable the separate receiver's built-in NR and Studio compressor; enable Studio NR; try **NR strength 12–18**, `NR smoothing` 0.970–0.982, `NR output gain` 0 dB, and Speech Preservation on. A/B with NR off on the same weak HF signal. Continuous broadband hiss is the target; electrical clicks need NB, and stable heterodynes need Notch. Noise reduction will sometimes color weak speech, especially at high strengths.
+
+**Listening presets** (selector above NB/Notch/NR/EQ/Comp): 
+
+| Modulation | Named listening presets |
+| --- | --- |
+| SSB (USB/LSB) | Factory SSB, Weak SSB / DX, Wide SSB |
+| AM | Factory AM, Hi-Fi AM, Warm AM, AM Communications |
+| CW | Factory CW, CW Narrow, CW Wide |
+| NFM/WFM/Digital | Factory mode preset |
+
+Selecting a named preset replaces **only the currently selected modulation's parameter overrides** and immediately applies the profile. Where indicated it also enables or disables global EQ/NR/compression module switches. **Merely changing the receiver modulation never changes those global on/off switches.** Changing a slider after applying a preset automatically displays **Custom (manual)**. Prior saved profiles continue to load as Custom without being overwritten; `Reset mode` clears current-mode parameter overrides as before. Use the **Export** button to back up presets and tuning before experimenting.
+
+Preset mode switching is automatic based on OpenWebRX+'s actual demodulator panel, but a listening preset is chosen explicitly by the operator. **Hi-Fi AM cannot recreate frequencies that the receiver's demodulator/bandwidth settings have already filtered out**; widen the receiver AM filter if available.
+
+The plugin intentionally retains `AudioFilterPlugin.build === 'studio-2.0.0'` so older `init.js` compatibility checks keep passing. Check `AudioFilterPlugin.revision` or `AudioFilterPlugin.status().revision` for `2.1.0-beta.3`.
+
+**Signal processing regression checks:** GitHub Actions runs `node tests/validate-nr-presets.cjs` alongside the existing DSP, worklet, default-resolution, and receiver-mode tests. A deterministic synthetic broadband-noise test measured approximately 3.3 dB reduction at strength 16 and 7.8 dB at strength 26, with a weak-tone projection retained. These tests are not equivalent to listening tests with live SSB, fading, static crashes, or AM broadcasts.
 
 ## Installation
 
@@ -36,7 +59,7 @@ Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 202
    })().catch(console.error);
    ```
 
-   **Do not paste a second entire async block into an existing init.js.** Insert only the `await Plugins.load('audio_filter');` line into its existing startup function. Remove any old `audio_filter` remote URL registrations. Do not call `Plugins.load()` twice for the same name. Keep all other working plugin lines intact.
+   **If you already have the early-loading configuration working, do not edit `init.js` at all for this upgrade.** Do not paste a second entire async block into an existing init.js. Insert only the `await Plugins.load('audio_filter');` line into its existing startup function. Remove any old `audio_filter` remote URL registrations. Do not call `Plugins.load()` twice for the same name. Keep all other working plugin lines intact.
 
 4. Access the receiver over HTTPS (your Cloudflare Tunnel is suitable), then hard-reload. **AudioWorklet may be blocked by restrictive Content-Security-Policy settings that prohibit `blob:` worklet modules.** In that case the page should retain audio and show fallback mode.
 
