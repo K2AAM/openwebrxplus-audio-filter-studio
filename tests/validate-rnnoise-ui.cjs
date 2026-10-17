@@ -87,5 +87,23 @@ const tryAgain=vm.runInContext('retryRnnoise',api);
  tryAgain();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(missing.rnnoiseState,'loading');
  assert.equal(events.filter(x=>x.type==='rnnoise-init').length,2);
- console.log('RNNoise status, concurrent loading, sticky fallback and explicit Retry passed');
+ // Changing back to classical while a Worklet addModule is still pending
+ // must cancel the neural activation without leaving a stuck loading flag.
+ const slow=fakeRoute();let releaseModule;
+ slow.context.audioWorklet.addModule=()=>{
+   modules++;return new Promise(resolve=>{releaseModule=resolve;});
+ };
+ routes.clear();routes.add(slow);
+ const before=events.filter(x=>x.type==='rnnoise-init').length;
+ const loading=ensure();
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(slow.rnnoiseState,'loading');
+ p.nr_engine='classic';releaseModule();await loading;
+ assert.equal(slow.rnnoiseState,'not-loaded');
+ assert.equal(events.filter(x=>x.type==='rnnoise-init').length,before,
+   'Cancelled neural mode must not initialize RNNoise');
+ p.nr_engine='rnnoise';await ensure();
+ assert.equal(events.filter(x=>x.type==='rnnoise-init').length,before+1,
+   'Returning to neural mode must initialize the loaded model');
+ console.log('RNNoise status, concurrency, cancellation, sticky fallback and Retry passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
