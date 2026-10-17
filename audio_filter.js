@@ -92,6 +92,7 @@
         this.nrPrevGamma=new Float32Array(this.nrBins);
         this.nrSpeechProb=new Float32Array(this.nrBins);
         this.nrPriorSNR=new Float32Array(this.nrBins);
+        this.nrSpeechHold=new Uint16Array(this.nrBins);
         this.nrHistory=new Float32Array(this.nrBins*this.nrHistorySize);
         this.nrHistoryCount=0;this.nrHistoryIndex=0;this.nrWindowAge=0;
         this.mag=new Float32Array(this.N/2+1);
@@ -142,6 +143,7 @@
       resetNoiseState(){
         this.noise.fill(0);this.gains.fill(1);this.nrWindow.fill(Infinity);this.nrSmooth.fill(0);
         this.nrPrevGamma.fill(1);this.nrSpeechProb.fill(0);this.nrPriorSNR.fill(0);
+        this.nrSpeechHold.fill(0);
         this.nrHistory.fill(0);this.nrHistoryCount=0;this.nrHistoryIndex=0;this.nrWindowAge=0;
         this.noiseReady=false;
       }
@@ -195,6 +197,7 @@
           const noiseClose=1-Math.exp(-hopSeconds/(0.115-0.070*character));
           const pRise=1-Math.exp(-hopSeconds/0.025);
           const pFall=1-Math.exp(-hopSeconds/0.160);
+          const maxSpeechHold=Math.ceil(0.65/hopSeconds);
 
           // Pass 1: decision-directed a-priori SNR, evaluated against the
           // PREVIOUS noise estimate. Compute ALL probabilities before using
@@ -225,10 +228,13 @@
             this.nrSmooth[k]=smooth;
             const oldNoise=Math.max(1e-7,this.noise[k]||smooth);
             const protectedSpeech=this.noiseReady&&this.nrSpeechProb[k]>=0.68;
+            this.nrSpeechHold[k]=protectedSpeech?
+              Math.min(65535,this.nrSpeechHold[k]+1):0;
 
-            // Permit downward updates even during speech, but freeze
-            // upward minima during strong speech presence.
-            if(!protectedSpeech||smooth<oldNoise){
+            // Preserve syllables; after 650ms, allow a new estimate even
+            // if the probability remains high (e.g. broadband QRM jumps).
+            // This avoids infinite speech holds that permanently freeze NR.
+            if(!protectedSpeech||smooth<oldNoise||this.nrSpeechHold[k]>=maxSpeechHold){
               if(smooth<this.nrWindow[k])this.nrWindow[k]=smooth;
             }
             let minimum=Number.isFinite(this.nrWindow[k])?
