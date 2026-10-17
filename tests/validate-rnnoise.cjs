@@ -97,5 +97,21 @@ function settings(engine='rnnoise'){
  const cw=await makeProcessor(48000,true);
  cw.processor.port.onmessage({data:{type:'settings',value:{...settings(),mode:'cw'}}});
  assert.equal(cw.processor.activeRnnoise,false);
+ // A broken model must fall back to the already-running classic engine,
+ // not mute the route or report a fatal Worklet processor failure.
+ const broken=await makeProcessor(48000,true);
+ broken.fake.m._rnnoise_process_frame=()=>{throw Error('simulated WASM inference failure');};
+ broken.processor.port.onmessage({data:{type:'settings',value:settings()}});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(broken.processor.activeRnnoise,true);
+ for(let i=0;i<5;i++){
+   const input=[new Float32Array(128).fill(.15)],output=[new Float32Array(128)];
+   broken.processor.process([input],[output]);
+   assert(output[0].every(Number.isFinite),'Neural failure must not poison audio output');
+ }
+ assert.equal(broken.processor.activeRnnoise,false,'Bad model must deactivate');
+ assert.equal(broken.processor.engine.settings.nr,true,'Classical NR must recover after neural failure');
+ assert(broken.events.some(x=>x.type==='rnnoise-state'&&x.state==='error'));
+ assert(!broken.events.some(x=>x.type==='error'),'Neural failure must not invoke fatal worklet bypass');
  console.log('RNNoise single-worklet, 480-sample FIFO, loading and classical fallback passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});
