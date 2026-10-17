@@ -561,7 +561,7 @@
     return rnnoiseSourcePromise;
   }
   async function ensureRnnoise(){
-    if(destroyed||!enabled.nr||resolveModeSettings().nr_engine!=='rnnoise')return;
+    if(destroyed||!enabled.nr||resolveModeSettings().nr_engine!=='rnnoise'||resolveModeSettings().nr_snr<=0)return;
     if(mode!=='ssb'&&mode!=='am'){rnnoiseError='Speech-only (AM or SSB)';updateRNNoiseUI();return;}
     const candidates=[...routes].filter(r=>r.worklet&&r.processor&&!r.destroyed);
     if(candidates.some(r=>r.context.sampleRate!==48000)){
@@ -603,7 +603,8 @@
       note.textContent=p.nr_engine!=='rnnoise'
         ?'Classical spectral NR (default). RNNoise is optional for speech.'
         :!enabled.nr?'Enable NR to start experimental RNNoise.'
-        :rnnoiseError||(active?'RNNoise ready · 48 kHz · speech only · +10 ms buffering':
+        :p.nr_snr<=0?'NR Strength 0 bypasses RNNoise; raise Strength to load it.'
+        :rnnoiseError||(active?'RNNoise ready · 48 kHz · speech only · +10 ms · Strength = wet mix':
         'Loading RNNoise; classical NR continues until ready.');
     }
   }
