@@ -2,6 +2,8 @@
 
 ## Unreleased — beta.2 candidate
 
+- Fix `AudioFilterPlugin.settings().mode` always reporting `ssb` even when the receiver is in AM or CW; report the live modulation and global enabled-module states using the same effective settings sent to the DSP.
+
 - Fix Studio sliders/knobs initially displaying their minimum instead of the DSP's actual defaults (especially Output gain, NR gain, compressor boost, tonal guard and AGC target).
 - Resolve all six modulation profiles against one canonical set of AudioWorklet/ScriptProcessor defaults.
 - Save only new per-mode user overrides; retain existing stored settings without resetting preferences. `Reset mode` clears overrides for the current mode.
