@@ -400,6 +400,9 @@
   const routes=new Set(), errors=[], observedSources=new Set();
   let interceptCount=0, animationId=0, pollingId=0, watchdogId=0, workletUrl=null;
   const workletLoads=new WeakMap();
+  const rnnoiseWorkletLoads=new WeakMap();
+  let rnnoiseSourcePromise=null, rnnoiseError='';
+  const RNNOISE_ASSET='/plugins/receiver/audio_filter/rnnoise-sync.js';
   const listeners=[];
   const originals={connect:AudioNode.prototype.connect};
   const originalFactories=[];
@@ -518,6 +521,7 @@
       if(r.processor&&r.processor.port)try{r.processor.port.postMessage({type:'settings',value:p});}catch(e){errorLog(e,'send settings');}
     }
     updateToggles();
+    if(p.nr&&p.nr_engine==='rnnoise')void ensureRnnoise();
   }
   function setFlag(flag,on){enabled[flag]=!!on;compareGain=1;if(flag==='nr')compareReference=false;
     safeStorageSet(STORAGE+persistentKeys[flag],String(!!on));syncSettings();}
@@ -534,6 +538,70 @@
     return new AudioWorkletNode(context,'af-studio-2',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[1]});
   }
 
+  // Load the optional, locally hosted RNNoise WASM wrapper only on demand.
+  // The single existing AudioWorklet processor remains registered as before.
+  function fetchRnnoiseSource(){
+    if(!rnnoiseSourcePromise){
+      rnnoiseSourcePromise=(async()=>{
+        const response=await fetch(RNNOISE_ASSET,{credentials:'same-origin'});
+        if(!response.ok)throw Error('RNNoise asset missing (HTTP '+response.status+')');
+        const source=await response.text();
+        if(source.length<1000000||source.length>2800000||
+           !source.includes('createRNNWasmModuleSync')||
+           !source.includes('_rnnoise_process_frame'))
+          throw Error('Unexpected RNNoise WASM bundle; check installed version');
+        // The upstream ESM export stays intact. Only expose its factory
+        // to the EXISTING AudioWorklet processor's shared global scope.
+        return source+'\\n;globalThis.__afStudioRNNoiseFactory=createRNNWasmModuleSync;\\n';
+      })().catch(e=>{rnnoiseSourcePromise=null;throw e;});
+    }
+    return rnnoiseSourcePromise;
+  }
+  async function ensureRnnoise(){
+    if(destroyed||!enabled.nr||resolveModeSettings().nr_engine!=='rnnoise')return;
+    if(mode!=='ssb'&&mode!=='am'){rnnoiseError='Speech-only (AM or SSB)';updateRNNoiseUI();return;}
+    const candidates=[...routes].filter(r=>r.worklet&&r.processor&&!r.destroyed);
+    if(candidates.some(r=>r.context.sampleRate!==48000)){
+      rnnoiseError='RNNoise requires a 48 kHz audio context';updateRNNoiseUI();return;
+    }
+    if(!candidates.length){rnnoiseError='Waiting for 48 kHz AudioWorklet';updateRNNoiseUI();return;}
+    rnnoiseError='Loading optional RNNoise module…';updateRNNoiseUI();
+    try{
+      const source=await fetchRnnoiseSource();
+      for(const r of candidates){
+        if(destroyed||r.destroyed)continue;
+        if(!rnnoiseWorkletLoads.has(r.context)){
+          const moduleUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
+          const load=r.context.audioWorklet.addModule(moduleUrl)
+            .finally(()=>URL.revokeObjectURL(moduleUrl));
+          rnnoiseWorkletLoads.set(r.context,load);
+        }
+        await rnnoiseWorkletLoads.get(r.context);
+        if(!r.destroyed&&r.processor&&r.processor.port){
+          r.rnnoiseState='loading';
+          r.processor.port.postMessage({type:'rnnoise-init'});
+        }
+      }
+    }catch(e){
+      rnnoiseError='RNNoise unavailable: '+String(e.message||e);
+      errorLog(e,'optional RNNoise');updateRNNoiseUI();
+    }
+  }
+  function updateRNNoiseUI(){
+    if(!panel)return;
+    const select=panel.querySelector('#af2-nr-engine');
+    const note=panel.querySelector('#af2-rnnoise-note');
+    const p=currentDSPSettings();
+    if(select)select.value=p.nr_engine==='rnnoise'?'rnnoise':'classic';
+    if(note){
+      const active=[...routes].find(r=>r.rnnoiseState==='ready');
+      note.textContent=p.nr_engine!=='rnnoise'
+        ?'Classical spectral NR (default). RNNoise is optional for speech.'
+        :!enabled.nr?'Enable NR to start experimental RNNoise.'
+        :rnnoiseError||(active?'RNNoise ready · 48 kHz · speech only · +10 ms buffering':
+        'Loading RNNoise; classical NR continues until ready.');
+    }
+  }
   function originalConnect(source,dest,args=[]){return originals.connect.call(source,dest,...args);}
   function bypass(r,reason){
     if(r.destroyed)return;
