@@ -28,3 +28,5 @@ jobs:
         run: node tests/validate-rnnoise.cjs
       - name: RNNoise pinned WebAssembly integration smoke
         run: bash tests/validate-rnnoise-bundle.sh
+      - name: RNNoise status and recovery UI
+        run: node tests/validate-rnnoise-ui.cjs
