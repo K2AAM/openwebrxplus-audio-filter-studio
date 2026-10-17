@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0-beta.2 — RNNoise speech/DX polish (2026-10-17)
+
+- Add opt-in **Weak SSB / DX · Neural** listening preset, separate from unchanged classical DX preset. Uses RNNoise Strength **27** (90% wet), 130–2950 Hz EQ, +1.5 dB at 1450 Hz, Comp off. Based on positive weak-SSB live listening reports; neural model and DSP untouched.
+- Advanced panel accurately distinguishes neural **ACTIVE**, loading, unsupported sample rate/modulation, NR off, Strength 0, and classical fallback. Expose requested versus effective NR engine in `AudioFilterPlugin.status()`, and per-route RNNoise failure details.
+- Prevent concurrent settings changes from spawning redundant model/module loads. Sticky model and fetch failures leave classical NR operating instead of repeatedly retrying.
+- Add explicit **Retry RNNoise** only after failure; clear neural model's Worklet failure latch only on user request. Preserves single AudioWorklet and existing fail-open routing.
+- Extend CI with named-preset tests, inference-failure recovery, UI status and retry regression tests. No new inference model, FFT, latency, audio graph, or required asset downloads for existing 2.3 beta.1 installations.
+
 ## 2.3.0-beta.1 — experimental RNNoise speech-only mode (2026-10-17)
 
 - Optional, independent **RNNoise WASM** speech enhancer in Advanced → NR engine; default remains classical spectral. Voice-only for AM / USB / LSB at 48 kHz; no RNNoise for CW, AM music, digital reception, or unsupported sample rates.
