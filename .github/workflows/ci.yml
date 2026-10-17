@@ -18,3 +18,5 @@ jobs:
         run: node tests/validate-defaults.cjs
       - name: Receiver modulation detection
         run: node tests/validate-mode-detection.cjs
+      - name: Audio noise reduction and listening presets
+        run: node tests/validate-nr-presets.cjs
