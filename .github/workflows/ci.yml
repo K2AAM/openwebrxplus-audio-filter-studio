@@ -14,3 +14,5 @@ jobs:
         run: node --check audio_filter.js
       - name: DSP numerical tests and worklet simulation
         run: node tests/validate.cjs
+      - name: UI and DSP default synchronization
+        run: node tests/validate-defaults.cjs
