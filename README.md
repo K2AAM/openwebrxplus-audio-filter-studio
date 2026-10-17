@@ -1,6 +1,6 @@
-# Audio Filter Studio for OpenWebRX+ — 2.2 beta
+# Audio Filter Studio for OpenWebRX+ — 2.2 beta.2
 
-**Status: 2.2.0-beta.1 development candidate.** The 2.1 audio routing, EQ, NR and mode switching have received live OpenWebRX+ validation. The speech-aware 2.2 NR changes pass automated tests but still require on-air listening tests, especially for weak speech and fading. All new code is MIT licensed.
+**Status: 2.2.0-beta.2 development candidate.** Beta.1 has been exercised live on AM/SSB with substantial hiss reduction and intelligible weak stations, though voices can remain thin. Beta.2 adds optional SSB-only voice-body preservation, a retuned Weak SSB/DX preset, and a transient A/B level-match feature. CI passes; beta.2 still needs on-air evaluation. All new code is MIT licensed.
 
 Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 2026 contributors. **MIT license.**
 
@@ -12,6 +12,18 @@ Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 202
 - **Better observability.** `AudioFilterPlugin.status()` reports actual routes, processor type, context state, heartbeats, nonzero input samples, intercept count, and errors. The Studio UI displays `DSP ACTIVE`, `FALLBACK`, `CONNECTING`, `NOT ROUTED`, `BYPASS`, or `DSP ERROR · BYPASS`.
 - **Native receiver plugin UI.** Uses `Plugins.addButton` and `Plugins.addWindow` when available, with inline CSS and no dependencies. Advanced controls, JSON settings import/export, and original per-mode localStorage settings are retained; existing `null` overrides are treated as unset.
 - **Lifecycle handling.** `AudioFilterPlugin.disable()` first connects the original source to the destination, disconnects injected nodes, restores the original `connect` function where still owned, removes observers/event listeners, and cancels RAF/intervals.
+
+## What's new in 2.2.0-beta.2
+
+**Selective SSB voice-body preservation.** Advanced DSP exposes `SSB voice body` (`nr_body`, 0–1, factory default 0). It acts **only** on SSB and only within the existing spectral attenuation block. In the 200–950 Hz range, a triangular protection weight peaks near 575 Hz; extra attenuation protection is proportional to the existing speech-presence probability. It does **not** boost low frequencies, cannot recover speech that is absent from the signal, and has no effect in AM/CW/other modes. A value of 0 retains the beta.1 NR algorithm.
+
+**Weak SSB/DX listening preset** now uses NR Strength 26, Character 0.80, Voice body 0.65, 130 Hz high-pass, 2950 Hz low-pass, and +1.5 dB presence at 1450 Hz. This is a starting point for live tuning, not a measured optimum. Other named presets and old user-saved profiles remain intact.
+
+**NR A/B and level matching:** Studio shows `A/B: PROCESSED` / `A/B: REFERENCE` alongside a `Match levels` button. NR must be enabled. A/B switches off only the spectral attenuation (and its NR output gain), leaving the **same AudioWorklet, noise-estimator state, EQ, compressor, notch, NB, input/output route and latency** running. This does **not** toggle the user's saved NR flag, so switching back is immediate and does not reset the noise floor. `Match levels` captures approximately one second each of reference and processed output via the existing output analyser, computes a bounded ±6 dB processed-only gain to align **broadband RMS**, and uses that fixed compensation during subsequent toggling. The level match is approximate—not voice-loudness matching—and changing speech content, fading, tuning, NR or EQ settings can invalidate it. Calibration is **transient**, is never stored/exported, and resets on mode change, preset selection, module toggles, manual slider edits, and reset/import. Enable a stable signal and keep settings fixed during the ~2-second calibration; avoid relying on it when the station fades rapidly.
+
+**For on-air testing:** Open a weak SSB station, select Weak SSB/DX, first compare `SSB voice body` at 0 vs 0.65 while keeping receiver bandwidth fixed. Then use `Match levels` and tap A/B to compare voice intelligibility at roughly matched overall output levels. Listen for thin vowels, consonant loss, watery artifacts and changes in hiss. To isolate NR influence, turn off separate demodulator NR, and preferably disable Comp while calibrating.
+
+**Regressions:** `node tests/validate-ssb-compare.cjs` exercises true A/B-reference output unity including nonzero NR output gain and compensation, uninterrupted NR noise history while comparing, body-region tone retention, no AM modulation leakage, limited broadband noise lift, and processed-only match-gain application. Existing tests still run.
 
 ## What's new in 2.2.0-beta.1 (development branch)
 
