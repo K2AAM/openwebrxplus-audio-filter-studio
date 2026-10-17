@@ -100,6 +100,7 @@ function settings(engine='rnnoise'){
  // A broken model must fall back to the already-running classic engine,
  // not mute the route or report a fatal Worklet processor failure.
  const broken=await makeProcessor(48000,true);
+ const originalInference=broken.fake.m._rnnoise_process_frame;
  broken.fake.m._rnnoise_process_frame=()=>{throw Error('simulated WASM inference failure');};
  broken.processor.port.onmessage({data:{type:'settings',value:settings()}});
  await new Promise(resolve=>setImmediate(resolve));
@@ -113,5 +114,17 @@ function settings(engine='rnnoise'){
  assert.equal(broken.processor.engine.settings.nr,true,'Classical NR must recover after neural failure');
  assert(broken.events.some(x=>x.type==='rnnoise-state'&&x.state==='error'));
  assert(!broken.events.some(x=>x.type==='error'),'Neural failure must not invoke fatal worklet bypass');
+ // No hidden retry loops; user-initiated retry clears the failure latch.
+ for(let i=0;i<3;i++){
+   broken.processor.port.onmessage({data:{type:'settings',value:settings()}});
+ }
+ assert.equal(broken.processor.rnFailed,true,'Ordinary settings must not auto-retry the broken model');
+ broken.fake.m._rnnoise_process_frame=originalInference;
+ broken.processor.port.onmessage({data:{type:'rnnoise-retry'}});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(broken.processor.rnFailed,false,'Explicit retry must clear failed latch');
+ assert.equal(broken.processor.activeRnnoise,true,'Explicit retry must re-enable neural processing');
+ assert(broken.events.some(x=>x.type==='rnnoise-state'&&x.state==='ready'),
+   'Successful retry must report neural ready');
  console.log('RNNoise single-worklet, 480-sample FIFO, loading and classical fallback passed');
 })().catch(e=>{console.error(e);process.exitCode=1;});

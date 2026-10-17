@@ -1,6 +1,6 @@
-# Audio Filter Studio for OpenWebRX+ — 2.3 beta.1 (RNNoise experiment)
+# Audio Filter Studio for OpenWebRX+ — 2.3 beta.2 (RNNoise speech/DX)
 
-**Status: 2.3.0-beta.1 experimental candidate.** Classical spectral NR from the working 2.2 branch is unchanged and remains the default. The optional, self-hosted RNNoise/WASM voice-only path has passed pinned-binary and single-worklet integration tests, but **has not yet been verified in Safari/OpenWebRX+ on-air**. The Studio source remains MIT licensed; the optional upstream WebAssembly bundle has its own BSD/Apache license notices.
+**Status: 2.3.0-beta.2 candidate.** Live Safari/OpenWebRX+ USB/LSB listening with beta.1 found RNNoise substantially reduced hiss and improved intelligibility of weak speech at Strength 27 with reasonably natural audio. Strength 30 audibly removed wanted speech. Beta.2 is a *preset, status and retry* update only: the neural model, 480-sample buffering, DSP algorithms and audio graph are unchanged. Classical spectral NR remains the default; RNNoise remains opt-in. Existing model license notices remain Apache/BSD; Studio source remains MIT.
 
 Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 2026 contributors. **MIT license.**
 
@@ -12,6 +12,33 @@ Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 202
 - **Better observability.** `AudioFilterPlugin.status()` reports actual routes, processor type, context state, heartbeats, nonzero input samples, intercept count, and errors. The Studio UI displays `DSP ACTIVE`, `FALLBACK`, `CONNECTING`, `NOT ROUTED`, `BYPASS`, or `DSP ERROR · BYPASS`.
 - **Native receiver plugin UI.** Uses `Plugins.addButton` and `Plugins.addWindow` when available, with inline CSS and no dependencies. Advanced controls, JSON settings import/export, and original per-mode localStorage settings are retained; existing `null` overrides are treated as unset.
 - **Lifecycle handling.** `AudioFilterPlugin.disable()` first connects the original source to the destination, disconnects injected nodes, restores the original `connect` function where still owned, removes observers/event listeners, and cancels RAF/intervals.
+
+## What's new in 2.3.0-beta.2
+
+**Weak SSB / DX · Neural** is a new *named listening preset* for USB/LSB, separate from the existing **Weak SSB / DX** classical preset. It selects RNNoise, NR Strength **27** (90% neural / 10% delayed original audio), high-pass **130 Hz**, low-pass **2950 Hz**, presence **+1.5 dB at 1450 Hz**, EQ enabled, and compressor disabled. This reflects one favorable real-world listening test, not a universal optimal setting. Other presets, profile storage/export, and the classical DSP algorithms remain unchanged.
+
+**More honest status reporting.** In Advanced, the RNNoise description distinguishes **ACTIVE**, **loading**, **NR off**, **Strength 0 bypass**, unsupported modulation/sample rate, and **classical fallback**. `AudioFilterPlugin.status()` now exposes `nrEngine` (requested), `nrEngineEffective` (the active engine under current settings and live-route state), plus per-route `rnnoiseState` and `rnnoiseFailure`. Some reports remain high-level; if your WebSocket or browser worklet stops, consult the existing fail-open route status.
+
+**Manual recovery.** If RNNoise module fetch, loading, or inference fails, classical spectral NR continues, the reason stays visible, and Advanced shows **Retry RNNoise**. This is user-initiated only, so settings changes don't repeatedly reload a broken model. Retry doesn't create another audio graph, and returning to Classical spectral is always available. Initial model installation is still needed once per server, as in beta.1.
+
+**Test commands:** `node tests/validate-rnnoise.cjs` now checks explicit retry after a simulated inference failure. `node tests/validate-rnnoise-ui.cjs` covers status text, duplicate-load prevention, sticky error state, repeated settings messages, asset fetch failure, and manual recovery. Both join the existing full CI suite.
+
+**Installation if beta.1 is already working:**
+
+```bash
+cd ~/openwebrxplus-audio-filter-studio
+git fetch origin
+git switch feature/studio-2-3-beta2-neural-dx-polish
+git pull --ff-only
+sudo cp -p /usr/lib/python3/dist-packages/htdocs/plugins/receiver/audio_filter/audio_filter.js \
+  /usr/lib/python3/dist-packages/htdocs/plugins/receiver/audio_filter/audio_filter.js.beta1-backup
+sudo install -m 644 audio_filter.js \
+  /usr/lib/python3/dist-packages/htdocs/plugins/receiver/audio_filter/audio_filter.js
+```
+
+The existing `rnnoise-sync.js` binary stays installed: **do not run the model installer again**. After refreshing the SDR webpage, verify `AudioFilterPlugin.revision` reports `2.3.0-beta.2`, then select **Weak SSB / DX · Neural** while tuned to USB/LSB. The internal `build` remains `studio-2.0.0` deliberately, for OpenWebRX+ `init.js` compatibility.
+
+If the browser still reports the old revision, remember this server previously had a **Cloudflare-cached** copy of `/static/plugins/receiver/audio_filter/audio_filter.js`; confirm the cache-bypass rule for `/static/plugins/receiver/*` is active, rather than blindly reinstalling the local file.
 
 ## Experimental speech enhancement: RNNoise WASM (2.3.0-beta.1)
 

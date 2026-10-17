@@ -29,7 +29,7 @@
   'use strict';
   const ID = 'audio_filter';
   const BUILD = 'studio-2.0.0'; // retain compatibility with existing init.js
-  const REVISION = '2.3.0-beta.1';
+  const REVISION = '2.3.0-beta.2';
   const STORAGE = 'openwebrx-audio-filter-';
   if (window.AudioFilterPlugin && window.AudioFilterPlugin.build === BUILD) return;
 
@@ -379,6 +379,7 @@
   const listeningPresets={
     ssb:[
       {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:26,nr_alpha:0.970,nr_comb:0.25,nr_speech_mode:true,nr_character:0.80,nr_body:0.65},flags:{eq:true,nr:true,comp:false}},
+      {id:'weak-dx-neural',label:'Weak SSB / DX · Neural',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:27,nr_gain:0,nr_engine:'rnnoise'},flags:{eq:true,nr:true,comp:false}},
       {id:'wide-ssb',label:'Wide SSB',params:{highpassFreq:85,lowpassFreq:4000,peakingFreq:1500,peakingGain:0,nr_snr:6},flags:{eq:true,nr:false}}
     ],
     am:[
@@ -531,7 +532,7 @@
 
   function makeWorkletSource(){
     return `"use strict";\nconst DSPCore=(${createDSPCore.toString()})();\n`+
-      "\nclass RNNoiseBridge {\n  constructor(module){\n    this.module=module;\n    this.frameSize=480;\n    this.input=new Float32Array(480);\n    this.output=new Float32Array(480);\n    this.dryOutput=new Float32Array(480);\n    this.write=0;this.read=480;\n    this.state=module._rnnoise_create();\n    this.inputPtr=module._malloc(480*4);\n    this.outputPtr=module._malloc(480*4);\n    if(!this.state||!this.inputPtr||!this.outputPtr){\n      this.destroy();throw Error('RNNoise state allocation failed');\n    }\n  }\n  sample(x,mix){\n    // Both dry and neural audio are delayed by the same 480 samples, so\n    // mixing does not create comb filtering. Strength 0 bypasses the\n    // neural path entirely in setSettings().\n    let out=0;\n    if(this.read<480){\n      out=((1-mix)*this.dryOutput[this.read]+mix*this.output[this.read])/32768;\n      this.read++;\n    }\n    this.input[this.write++]=Math.max(-1,Math.min(1,x))*32768;\n    if(this.write===480){\n      const mod=this.module;\n      mod.HEAPF32.set(this.input,this.inputPtr/4);\n      const vad=mod._rnnoise_process_frame(this.state,this.outputPtr,this.inputPtr);\n      if(!Number.isFinite(vad))throw Error('RNNoise returned invalid frame');\n      this.output.set(mod.HEAPF32.subarray(this.outputPtr/4,this.outputPtr/4+480));\n      this.dryOutput.set(this.input);\n      this.write=0;this.read=0;\n    }\n    return out;\n  }\n  reset(){\n    this.input.fill(0);this.output.fill(0);this.dryOutput.fill(0);\n    this.write=0;this.read=480;\n  }\n  destroy(){\n    if(this.module){\n      if(this.state)this.module._rnnoise_destroy(this.state);\n      if(this.inputPtr)this.module._free(this.inputPtr);\n      if(this.outputPtr)this.module._free(this.outputPtr);\n    }\n    this.state=0;this.inputPtr=0;this.outputPtr=0;\n  }\n}\nclass AudioFilterStudioProcessor extends AudioWorkletProcessor {\n  constructor(){\n    super();\n    this.engine=new DSPCore(sampleRate);\n    this.samples=0;this.nonzero=0;\n    this.params={};\n    this.requestedRnnoise=false;\n    this.activeRnnoise=false;\n    this.rnLoading=false;\n    this.rnFailed=false;\n    this.bridge=null;\n    this.port.onmessage=e=>{\n      try {\n        const msg=e.data||{};\n        if(msg.type==='settings')this.setSettings(msg.value||{});\n        else if(msg.type==='reset'){this.engine.reset();if(this.bridge)this.bridge.reset();}\n        else if(msg.type==='rnnoise-init')this.initRnnoise();\n      }catch(err){this.port.postMessage({type:'error',message:String(err)});}\n    };\n  }\n  setSettings(p){\n    this.params=p;\n    this.requestedRnnoise=!!p.nr&&p.nr_snr>0&&p.nr_engine==='rnnoise'&&\n      (p.mode==='ssb'||p.mode==='am')&&sampleRate===48000;\n    const active=this.requestedRnnoise&&!!this.bridge&&!this.rnFailed;\n    if(active!==this.activeRnnoise&&this.bridge)this.bridge.reset();\n    this.activeRnnoise=active;\n    this.engine.setSettings(active?Object.assign({},p,{nr:false}):p);\n    if(this.requestedRnnoise&&!this.bridge&&!this.rnLoading&&!this.rnFailed)this.initRnnoise();\n  }\n  initRnnoise(){\n    if(!this.requestedRnnoise||this.rnLoading||this.bridge||this.rnFailed)return;\n    const factory=globalThis.__afStudioRNNoiseFactory;\n    if(typeof factory!=='function')return;\n    this.rnLoading=true;\n    Promise.resolve().then(()=>factory()).then(module=>{\n      const bridge=new RNNoiseBridge(module);\n      this.bridge=bridge;this.rnLoading=false;\n      this.setSettings(this.params);\n      this.port.postMessage({type:'rnnoise-state',state:'ready'});\n    }).catch(e=>{\n      this.rnLoading=false;this.rnFailed=true;\n      this.port.postMessage({type:'rnnoise-state',state:'error',message:String(e)});\n    });\n  }\n  process(inputs,outputs){\n    const input=inputs[0],output=outputs[0];\n    if(!output||!output[0])return true;\n    try{\n      const n=output[0].length;\n      for(let i=0;i<n;i++){\n        let x=0;\n        if(input&&input.length){\n          for(let c=0;c<input.length;c++)x+=input[c][i]||0;\n          x/=input.length;\n        }\n        if(Math.abs(x)>1e-5)this.nonzero++;\n        if(this.activeRnnoise){\n          try{x=this.bridge.sample(x,Math.max(0,Math.min(1,this.params.nr_snr/30)));}\n          catch(e){\n            this.bridge.destroy();this.bridge=null;this.rnFailed=true;\n            this.activeRnnoise=false;\n            this.engine.setSettings(this.params);\n            this.port.postMessage({type:'rnnoise-state',state:'error',message:String(e)});\n          }\n        }\n        const y=this.engine.process(x);\n        for(let c=0;c<output.length;c++)output[c][i]=y;\n      }\n      this.samples+=n;\n      if(this.samples>=sampleRate/3){\n        this.port.postMessage({\n          type:'heartbeat',samples:this.samples,nonzero:this.nonzero,\n          rate:sampleRate,latency:this.engine.N-1+(this.activeRnnoise?480:0)\n        });\n        this.samples=0;this.nonzero=0;\n      }\n    }catch(e){\n      for(let c=0;c<output.length;c++)output[c].fill(0);\n      this.port.postMessage({type:'error',message:String(e)});\n    }\n    return true;\n  }\n}\nregisterProcessor('af-studio-2',AudioFilterStudioProcessor);\n";
+      "\nclass RNNoiseBridge {\n  constructor(module){\n    this.module=module;\n    this.frameSize=480;\n    this.input=new Float32Array(480);\n    this.output=new Float32Array(480);\n    this.dryOutput=new Float32Array(480);\n    this.write=0;this.read=480;\n    this.state=module._rnnoise_create();\n    this.inputPtr=module._malloc(480*4);\n    this.outputPtr=module._malloc(480*4);\n    if(!this.state||!this.inputPtr||!this.outputPtr){\n      this.destroy();throw Error('RNNoise state allocation failed');\n    }\n  }\n  sample(x,mix){\n    // Both dry and neural audio are delayed by the same 480 samples, so\n    // mixing does not create comb filtering. Strength 0 bypasses the\n    // neural path entirely in setSettings().\n    let out=0;\n    if(this.read<480){\n      out=((1-mix)*this.dryOutput[this.read]+mix*this.output[this.read])/32768;\n      this.read++;\n    }\n    this.input[this.write++]=Math.max(-1,Math.min(1,x))*32768;\n    if(this.write===480){\n      const mod=this.module;\n      mod.HEAPF32.set(this.input,this.inputPtr/4);\n      const vad=mod._rnnoise_process_frame(this.state,this.outputPtr,this.inputPtr);\n      if(!Number.isFinite(vad))throw Error('RNNoise returned invalid frame');\n      this.output.set(mod.HEAPF32.subarray(this.outputPtr/4,this.outputPtr/4+480));\n      this.dryOutput.set(this.input);\n      this.write=0;this.read=0;\n    }\n    return out;\n  }\n  reset(){\n    this.input.fill(0);this.output.fill(0);this.dryOutput.fill(0);\n    this.write=0;this.read=480;\n  }\n  destroy(){\n    if(this.module){\n      if(this.state)this.module._rnnoise_destroy(this.state);\n      if(this.inputPtr)this.module._free(this.inputPtr);\n      if(this.outputPtr)this.module._free(this.outputPtr);\n    }\n    this.state=0;this.inputPtr=0;this.outputPtr=0;\n  }\n}\nclass AudioFilterStudioProcessor extends AudioWorkletProcessor {\n  constructor(){\n    super();\n    this.engine=new DSPCore(sampleRate);\n    this.samples=0;this.nonzero=0;\n    this.params={};\n    this.requestedRnnoise=false;\n    this.activeRnnoise=false;\n    this.rnLoading=false;\n    this.rnFailed=false;\n    this.bridge=null;\n    this.port.onmessage=e=>{\n      try {\n        const msg=e.data||{};\n        if(msg.type==='settings')this.setSettings(msg.value||{});\n        else if(msg.type==='reset'){this.engine.reset();if(this.bridge)this.bridge.reset();}\n        else if(msg.type==='rnnoise-init')this.initRnnoise();\n        else if(msg.type==='rnnoise-retry'){\n          // Explicit user retry; never auto-loop after inference failure.\n          if(this.bridge){this.bridge.destroy();this.bridge=null;}\n          this.rnFailed=false;this.rnLoading=false;\n          this.setSettings(this.params);this.initRnnoise();\n        }\n      }catch(err){this.port.postMessage({type:'error',message:String(err)});}\n    };\n  }\n  setSettings(p){\n    this.params=p;\n    this.requestedRnnoise=!!p.nr&&p.nr_snr>0&&p.nr_engine==='rnnoise'&&\n      (p.mode==='ssb'||p.mode==='am')&&sampleRate===48000;\n    const active=this.requestedRnnoise&&!!this.bridge&&!this.rnFailed;\n    if(active!==this.activeRnnoise&&this.bridge)this.bridge.reset();\n    this.activeRnnoise=active;\n    this.engine.setSettings(active?Object.assign({},p,{nr:false}):p);\n    if(this.requestedRnnoise&&!this.bridge&&!this.rnLoading&&!this.rnFailed)this.initRnnoise();\n  }\n  initRnnoise(){\n    if(!this.requestedRnnoise||this.rnLoading||this.bridge||this.rnFailed)return;\n    const factory=globalThis.__afStudioRNNoiseFactory;\n    if(typeof factory!=='function')return;\n    this.rnLoading=true;\n    Promise.resolve().then(()=>factory()).then(module=>{\n      const bridge=new RNNoiseBridge(module);\n      this.bridge=bridge;this.rnLoading=false;\n      this.setSettings(this.params);\n      this.port.postMessage({type:'rnnoise-state',state:'ready'});\n    }).catch(e=>{\n      this.rnLoading=false;this.rnFailed=true;\n      this.port.postMessage({type:'rnnoise-state',state:'error',message:String(e)});\n    });\n  }\n  process(inputs,outputs){\n    const input=inputs[0],output=outputs[0];\n    if(!output||!output[0])return true;\n    try{\n      const n=output[0].length;\n      for(let i=0;i<n;i++){\n        let x=0;\n        if(input&&input.length){\n          for(let c=0;c<input.length;c++)x+=input[c][i]||0;\n          x/=input.length;\n        }\n        if(Math.abs(x)>1e-5)this.nonzero++;\n        if(this.activeRnnoise){\n          try{x=this.bridge.sample(x,Math.max(0,Math.min(1,this.params.nr_snr/30)));}\n          catch(e){\n            this.bridge.destroy();this.bridge=null;this.rnFailed=true;\n            this.activeRnnoise=false;\n            this.engine.setSettings(this.params);\n            this.port.postMessage({type:'rnnoise-state',state:'error',message:String(e)});\n          }\n        }\n        const y=this.engine.process(x);\n        for(let c=0;c<output.length;c++)output[c][i]=y;\n      }\n      this.samples+=n;\n      if(this.samples>=sampleRate/3){\n        this.port.postMessage({\n          type:'heartbeat',samples:this.samples,nonzero:this.nonzero,\n          rate:sampleRate,latency:this.engine.N-1+(this.activeRnnoise?480:0)\n        });\n        this.samples=0;this.nonzero=0;\n      }\n    }catch(e){\n      for(let c=0;c<output.length;c++)output[c].fill(0);\n      this.port.postMessage({type:'error',message:String(e)});\n    }\n    return true;\n  }\n}\nregisterProcessor('af-studio-2',AudioFilterStudioProcessor);\n";
   }
   async function createWorklet(context){
     if(!window.isSecureContext||!context.audioWorklet||typeof AudioWorkletNode==='undefined')throw Error('AudioWorklet unsupported or insecure context');
@@ -561,19 +562,22 @@
     return rnnoiseSourcePromise;
   }
   async function ensureRnnoise(){
-    if(destroyed||!enabled.nr||resolveModeSettings().nr_engine!=='rnnoise'||resolveModeSettings().nr_snr<=0)return;
-    if(mode!=='ssb'&&mode!=='am'){rnnoiseError='Speech-only (AM or SSB)';updateRNNoiseUI();return;}
+    const p=currentDSPSettings();
+    if(destroyed||!p.nr||p.nr_engine!=='rnnoise'||p.nr_snr<=0)return;
+    // Never start RNNoise for CW/digital/music or at an unsupported clock.
+    if(mode!=='ssb'&&mode!=='am'){updateRNNoiseUI();return;}
     const candidates=[...routes].filter(r=>r.worklet&&r.processor&&!r.destroyed);
-    if(candidates.some(r=>r.context.sampleRate!==48000)){
-      rnnoiseError='RNNoise requires a 48 kHz audio context';updateRNNoiseUI();return;
-    }
-    if(!candidates.length){rnnoiseError='Waiting for 48 kHz AudioWorklet';updateRNNoiseUI();return;}
-    if(candidates.every(r=>r.rnnoiseState==='ready')){rnnoiseError='';updateRNNoiseUI();return;}
-    rnnoiseError='Loading optional RNNoise module…';updateRNNoiseUI();
+    const pending=candidates.filter(r=>r.context.sampleRate===48000&&
+      !['ready','loading','error'].includes(r.rnnoiseState));
+    if(!pending.length){updateRNNoiseUI();return;}
+    // Mark loading BEFORE awaiting the asset/module. This prevents repeated
+    // settings broadcasts from racing addModule and sending duplicate init.
+    for(const r of pending)r.rnnoiseState='loading';
+    rnnoiseError='';updateRNNoiseUI();
     try{
       const source=await fetchRnnoiseSource();
-      for(const r of candidates){
-        if(destroyed||r.destroyed)continue;
+      for(const r of pending){
+        if(destroyed||r.destroyed||r.rnnoiseState!=='loading')continue;
         if(!rnnoiseWorkletLoads.has(r.context)){
           const moduleUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
           const load=r.context.audioWorklet.addModule(moduleUrl)
@@ -582,31 +586,74 @@
           rnnoiseWorkletLoads.set(r.context,load);
         }
         await rnnoiseWorkletLoads.get(r.context);
-        if(!r.destroyed&&r.processor&&r.processor.port&&r.rnnoiseState!=='ready'){
-          r.rnnoiseState='loading';
-          r.processor.port.postMessage({type:'rnnoise-init'});
+        const latest=currentDSPSettings();
+        if(latest.nr_engine!=='rnnoise'||!latest.nr||latest.nr_snr<=0||
+           (latest.mode!=='ssb'&&latest.mode!=='am')){
+          if(!r.destroyed&&r.rnnoiseState==='loading')r.rnnoiseState='not-loaded';
+          continue; // user changed their mind during async load
         }
+        if(!r.destroyed&&r.processor&&r.processor.port&&r.rnnoiseState==='loading')
+          r.processor.port.postMessage({type:'rnnoise-init'});
       }
     }catch(e){
-      rnnoiseError='RNNoise unavailable: '+String(e.message||e);
-      errorLog(e,'optional RNNoise');updateRNNoiseUI();
+      rnnoiseError='RNNoise unavailable: '+String(e&&e.message||e);
+      for(const r of pending)if(!r.destroyed&&r.rnnoiseState==='loading'){
+        r.rnnoiseState='error';r.rnnoiseFailure=rnnoiseError;
+      }
+      errorLog(e,'optional RNNoise');
+      updateRNNoiseUI();
     }
+  }
+  function retryRnnoise(){
+    const p=currentDSPSettings();
+    if(destroyed||!p.nr||p.nr_engine!=='rnnoise'||p.nr_snr<=0)return;
+    const failed=[...routes].filter(r=>r.rnnoiseState==='error'&&r.worklet&&!r.destroyed);
+    if(!failed.length)return;
+    rnnoiseError='';
+    for(const r of failed){
+      r.rnnoiseState='not-loaded';r.rnnoiseFailure='';
+      // The Worklet already has the WASM wrapper loaded, but its own error
+      // latch intentionally prevents automatic retry. Explicitly clear it.
+      if(rnnoiseWorkletLoads.has(r.context)&&r.processor?.port){
+        r.rnnoiseState='loading';
+        r.processor.port.postMessage({type:'rnnoise-retry'});
+      }
+    }
+    updateRNNoiseUI();
+    void ensureRnnoise(); // missing/failed asset can be fetched again
   }
   function updateRNNoiseUI(){
     if(!panel)return;
     const select=panel.querySelector('#af2-nr-engine');
     const note=panel.querySelector('#af2-rnnoise-note');
+    const retry=panel.querySelector('#af2-rnnoise-retry');
     const p=currentDSPSettings();
     if(select)select.value=p.nr_engine==='rnnoise'?'rnnoise':'classic';
-    if(note){
-      const active=[...routes].find(r=>r.rnnoiseState==='ready');
-      note.textContent=p.nr_engine!=='rnnoise'
-        ?'Classical spectral NR (default). RNNoise is optional for speech.'
-        :!enabled.nr?'Enable NR to start experimental RNNoise.'
-        :p.nr_snr<=0?'NR Strength 0 bypasses RNNoise; raise Strength to load it.'
-        :rnnoiseError||(active?'RNNoise ready · 48 kHz · speech only · +10 ms · Strength = wet mix':
-        'Loading RNNoise; classical NR continues until ready.');
+    const route=[...routes].find(r=>r.working&&r.processor)||
+      [...routes].find(r=>r.processor);
+    const possible=p.nr&&p.nr_snr>0&&p.nr_engine==='rnnoise'&&
+      (p.mode==='ssb'||p.mode==='am');
+    const fallback=!!route&&route.rnnoiseState==='error';
+    if(retry){
+      retry.hidden=!(possible&&fallback&&route.worklet&&route.context.sampleRate===48000);
+      retry.disabled=!possible||!fallback;
     }
+    if(!note)return;
+    if(p.nr_engine!=='rnnoise')
+      note.textContent='Classical spectral NR selected · RNNoise available for speech.';
+    else if(!p.nr)note.textContent='NR OFF · enable NR to start the neural engine.';
+    else if(p.nr_snr<=0)note.textContent='Strength 0 · RNNoise bypassed.';
+    else if(p.mode!=='ssb'&&p.mode!=='am')
+      note.textContent='Classical fallback · RNNoise supports spoken AM/SSB only.';
+    else if(!route)note.textContent='Waiting for receiver audio route; classical NR remains available.';
+    else if(!route.worklet)note.textContent='Classical fallback · RNNoise needs AudioWorklet.';
+    else if(route.context.sampleRate!==48000)
+      note.textContent='Classical fallback · RNNoise needs a 48 kHz audio context.';
+    else if(fallback)
+      note.textContent='Classical fallback · '+(route.rnnoiseFailure||rnnoiseError||'RNNoise failed')+' · Retry available.';
+    else if(route.rnnoiseState==='ready')
+      note.textContent='RNNoise ACTIVE · 48 kHz · speech-only · Strength = dry/wet mix.';
+    else note.textContent='RNNoise loading · classical NR remains active until ready.';
   }
   function originalConnect(source,dest,args=[]){return originals.connect.call(source,dest,...args);}
   function bypass(r,reason){
@@ -656,8 +703,8 @@
           if(e.data.type==='heartbeat')handleHeartbeat(r,e.data);
           else if(e.data.type==='rnnoise-state'){
             r.rnnoiseState=e.data.state;
-            rnnoiseError=e.data.state==='error'?'RNNoise failed; classical NR restored: '+String(e.data.message||'unknown'):
-              e.data.state==='ready'?'':'Loading RNNoise…';
+            r.rnnoiseFailure=e.data.state==='error'?'RNNoise model failed: '+String(e.data.message||'unknown'):'';
+            rnnoiseError=r.rnnoiseFailure;
             updateRNNoiseUI();
           }
           else if(e.data.type==='error'){errorLog(e.data.message,'worklet');bypass(r,'ERROR');}
@@ -740,12 +787,15 @@
     return {detach:()=>detachRoute(route),status:()=>routeStatus(route)};
   }
   function routeStatus(r){return {kind:r.kind,live:r.working,mode:r.mode,contextState:r.context.state,
-    sampleRate:r.context.sampleRate,rnnoiseState:r.rnnoiseState||'not-loaded',worklet:r.worklet,processor:r.processor?(r.worklet?'AudioWorklet':'ScriptProcessor'):'none',
+    sampleRate:r.context.sampleRate,rnnoiseState:r.rnnoiseState||'not-loaded',rnnoiseFailure:r.rnnoiseFailure||null,worklet:r.worklet,processor:r.processor?(r.worklet?'AudioWorklet':'ScriptProcessor'):'none',
     interceptedConnections:interceptCount,heartbeats:r.heartbeat,processedSamples:r.samples,nonzeroInputSamples:r.nonzero,
     lastHeartbeatMs:r.lastHeartbeat?Date.now()-r.lastHeartbeat:null,latencyMs:1000*((r.context.sampleRate>=32000?512:256)-1)/r.context.sampleRate};}
   function status(){const all=[...routes].map(routeStatus);const active=all.some(r=>r.live&&r.lastHeartbeatMs!==null&&r.lastHeartbeatMs<2200);
     return {build:BUILD,revision:REVISION,initialized,disabled:userDisabled,dspLive:active,routeCount:routes.size,
-      nrEngine:currentDSPSettings().nr_engine,rnnoiseError,
+      nrEngine:currentDSPSettings().nr_engine,
+      nrEngineEffective:active&&currentDSPSettings().nr_engine==='rnnoise'&&enabled.nr&&
+        currentDSPSettings().nr_snr>0&&['ssb','am'].includes(mode)&&
+        all.some(r=>r.live&&r.rnnoiseState==='ready'&&r.sampleRate===48000)?'rnnoise':'classic',rnnoiseError,
       interceptedConnections:interceptCount,mode,engine:all.some(r=>r.processor==='AudioWorklet')?'AudioWorklet':all.some(r=>r.processor==='ScriptProcessor')?'ScriptProcessor':'none',
       sampleRate:all[0]?.sampleRate||null,contextState:all[0]?.contextState||'none',routes:all,errors:errors.slice()};}
   function renderStatus(){if(!statusEl)return;const s=status(),a=s.routes.find(r=>r.live),r=s.routes[0];
@@ -803,6 +853,7 @@
     .af2-rnnoise{display:flex;flex-direction:column;gap:5px;margin:8px 0;color:#aebfd1;font-size:11px}
     .af2-rnnoise select{background:#1b2938;color:#e2edf4;border:1px solid #41566b;padding:6px;border-radius:5px}
     .af2-rnnoise-note{font-size:10px;color:#91a7b9;line-height:1.4}
+    .af2-rnnoise button[hidden]{display:none}.af2-rnnoise button{align-self:flex-start;padding:5px 9px}
     @media(max-width:470px){.af2-controls{grid-template-columns:repeat(2,1fr)}.af2{min-width:280px}.af2-buttons{grid-template-columns:repeat(3,1fr)}}
   `;
   function formatValue(v,unit){return (v<1?Number(v).toFixed(3):v<10?Number(v).toFixed(2):Math.round(v))+unit;}
@@ -969,7 +1020,7 @@
       <div class="af2-line"><span>● Input &nbsp; <span style="color:#48bfe8">● Output</span></span><span id="af-studio-meta">Awaiting receiver audio route</span></div>
       <div class="af2-compare"><button type="button" id="af2-compare" aria-pressed="false">A/B: PROCESSED</button><button type="button" id="af2-match">Match levels</button><span id="af2-compare-info" class="af2-compare-info">Enable NR to compare</span></div>
       <div class="af2-controls" id="af2-quick"></div><section class="af2-advanced" id="af2-advanced"><div class="af2-grid" id="af2-advanced-grid"></div></section>
-      <div class="af2-bottom"><span>Studio 2.3 beta.1 · Experimental RNNoise</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
+      <div class="af2-bottom"><span>Studio 2.3 beta.2 · Experimental RNNoise</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addWindow==='function'){
       try{windowNode=Plugins.addWindow(ID,'Audio Filter Studio',markup);}catch(e){errorLog(e,'Plugins.addWindow');}
     }
@@ -985,8 +1036,11 @@
       const option=document.createElement('option');option.value=value;option.textContent=label;engineSelect.appendChild(option);
     }
     const engineNote=document.createElement('span');engineNote.id='af2-rnnoise-note';engineNote.className='af2-rnnoise-note';
-    engineControl.append(engineSelect,engineNote);
+    const retryBtn=document.createElement('button');retryBtn.type='button';retryBtn.id='af2-rnnoise-retry';
+    retryBtn.textContent='Retry RNNoise';retryBtn.hidden=true;
+    engineControl.append(engineSelect,engineNote,retryBtn);
     panel.querySelector('#af2-advanced').prepend(engineControl);
+    listen(retryBtn,'click',retryRnnoise);
     listen(engineSelect,'change',()=>{
       compareReference=false;compareGain=1;rnnoiseError='';
       if(engineSelect.value==='rnnoise'&&!enabled.nr){enabled.nr=true;safeStorageSet(STORAGE+persistentKeys.nr,'true');}
