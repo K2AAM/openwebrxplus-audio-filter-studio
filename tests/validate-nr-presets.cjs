@@ -92,6 +92,21 @@ assert.equal(storage.ssb.nr_character,0.80,'Weak SSB preset must persist its NR 
 assert.equal(storage.ssb.nr_body,0.65,'Weak SSB must activate conditional voice-body protection');
 assert.equal(flags.eq,true);
 assert.equal(flags.nr,true);
+// Neural DX is separately selectable and must not overwrite the classic profile.
+assert(available('ssb').some(p=>p.id==='weak-dx-neural'));
+assert.equal(apply('weak-dx-neural'),true);
+assert.equal(selected(),'weak-dx-neural');
+assert.equal(storage.ssb.nr_engine,'rnnoise');
+assert.equal(storage.ssb.nr_snr,27);
+assert.equal(storage.ssb.highpassFreq,130);
+assert.equal(storage.ssb.lowpassFreq,2950);
+assert.equal(flags.eq,true);
+assert.equal(flags.nr,true);
+assert.equal(flags.comp,false);
+assert.equal(apply('weak-dx'),true);
+assert.equal(selected(),'weak-dx');
+assert.equal(storage.ssb.nr_engine,undefined,'Returning to classic DX must unset neural override');
+assert.equal(storage.ssb.nr_snr,26);
 ctx.mode='am';ctx.settings={};
 assert.equal(apply('hifi-am'),true);
 assert.equal(storage.am.lowpassFreq,11000);
