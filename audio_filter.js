@@ -28,7 +28,8 @@
 (function () {
   'use strict';
   const ID = 'audio_filter';
-  const BUILD = 'studio-2.0.0';
+  const BUILD = 'studio-2.0.0'; // retain compatibility with existing init.js
+  const REVISION = '2.1.0-beta.3';
   const STORAGE = 'openwebrx-audio-filter-';
   if (window.AudioFilterPlugin && window.AudioFilterPlugin.build === BUILD) return;
 
@@ -82,6 +83,13 @@
         this.window=new Float32Array(this.N);
         this.noise=new Float32Array(this.N/2+1);
         this.gains=new Float32Array(this.N/2+1);
+        // Sliding minimum-statistics estimator; all arrays allocated once.
+        this.nrBins=this.N/2+1;
+        this.nrHistorySize=6;
+        this.nrWindowFrames=Math.max(4,Math.round(0.12*rate/this.H));
+        this.nrWindow=new Float32Array(this.nrBins);
+        this.nrHistory=new Float32Array(this.nrBins*this.nrHistorySize);
+        this.nrHistoryCount=0;this.nrHistoryIndex=0;this.nrWindowAge=0;
         this.mag=new Float32Array(this.N/2+1);
         this.reverse=new Uint16Array(this.N);
         this.cos=new Float32Array(this.N>>1);
@@ -115,6 +123,7 @@
         const prev=this.settings || defaults;
         this.settings=Object.assign({},defaults,prev,s);
         const p=this.settings;
+        if((p.nr&&!prev.nr)||(p.nr&&p.mode!==prev.mode))this.resetNoiseState();
         this.hp.set(p.eq?'highpass':'none',p.highpassFreq);
         this.lp.set(p.eq?'lowpass':'none',p.lowpassFreq);
         this.bass.set(p.eq&&p.loudness?'lowshelf':'none',160,0.707,p.loudnessGain||0);
@@ -126,8 +135,13 @@
         this.updateNotches();
       }
       updateNotches(){const s=this.settings;for(let i=0;i<2;i++)this.notches[i].set(s.notch&&s.mode!=='cw'&&i<Math.min(2,s.maxNotches)?'notch':'none',this.auto[i],s.notchQ||35);}
+      resetNoiseState(){
+        this.noise.fill(0);this.gains.fill(1);this.nrWindow.fill(Infinity);
+        this.nrHistory.fill(0);this.nrHistoryCount=0;this.nrHistoryIndex=0;this.nrWindowAge=0;
+        this.noiseReady=false;
+      }
       reset(){
-        this.input.fill(0);this.ola.fill(0);this.weight.fill(0);this.noise.fill(0);this.gains.fill(1);
+        this.input.fill(0);this.ola.fill(0);this.weight.fill(0);this.resetNoiseState();
         this.hp.reset();this.lp.reset();this.compHp.reset();this.compLp.reset();this.bass.reset();this.peak.reset();this.air.reset();this.notches.forEach(n=>n.reset());
         this.index=0;this.blank=0;this.compEnvelope=0;this.compGain=1;this.compHang=0;this.noiseReady=false;
         this.candidate=0;this.candidateAge=0;this.auto=[0,0];this.frameCount=0;
@@ -160,35 +174,51 @@
         for(let k=0;k<=n/2;k++){this.mag[k]=Math.hypot(this.real[k],this.imag[k]);}
         if(p.notch && (this.frameCount++%4===0))this.analyzeNotch();
         if(p.nr){
-          const alpha=Math.max(0.8,Math.min(0.9997,p.nr_alpha));
-          const strength=Math.pow(10,Math.max(-10,Math.min(35,p.nr_snr))/20);
-          const speech=!!p.nr_speech_mode;
-          for(let k=0;k<=n/2;k++){
-            const mag=this.mag[k];
-            if(!this.noiseReady)this.noise[k]=Math.max(mag,1e-7);
-            else {
-              const estimate=this.noise[k];
-              const adap=mag<estimate?0.93:alpha;
-              const rise= speech?0.001:0.004;
-              this.noise[k]=Math.max(1e-7,adap*estimate+(1-adap)*Math.min(mag,estimate*(1+rise)));
+          // Short-time minima over ~720 ms adapt to retuning/noise-floor
+          // changes without misclassifying intermittent speech as noise.
+          const bins=this.nrBins,alpha=Math.max(0.8,Math.min(0.999,p.nr_alpha));
+          const strength=Math.max(0,Math.min(1,p.nr_snr/30));
+          const speech=!!p.nr_speech_mode,floor=speech?0.16:0.09,oversub=1+6*strength;
+          for(let k=0;k<bins;k++){
+            const mag=this.mag[k],candidate=Math.max(1e-7,mag);
+            if(candidate<this.nrWindow[k])this.nrWindow[k]=candidate;
+            let minimum=this.nrWindow[k];
+            for(let w=0;w<this.nrHistoryCount;w++){
+              const v=this.nrHistory[w*bins+k];
+              if(v>0&&v<minimum)minimum=v;
             }
-            const snr=mag/(this.noise[k]+1e-8);
-            // Mild musical-noise suppression: frequency- and time-smoothed gain.
-            let g=snr>=strength?1:Math.max(0.12,(snr/strength)*(snr/strength));
-            if(p.nr_comb>0 && k>0 && k<n/2 && mag>this.mag[k-1]*1.25 && mag>this.mag[k+1]*1.25)
-              g=Math.min(1,g+p.nr_comb*0.3);
-            const prev=this.gains[k]||1;
-            g= g>prev?0.55*g+0.45*prev:0.14*g+0.86*prev;
-            this.gains[k]=g;
+            if(!this.noiseReady)this.noise[k]=minimum;
+            else {
+              const prev=this.noise[k];
+              const blend=minimum<prev?0.18:1-alpha;
+              this.noise[k]=Math.max(1e-7,prev+blend*(minimum-prev));
+            }
+            const noise=this.noise[k],noisePower=noise*noise,signalPower=mag*mag+1e-12;
+            // Wiener-style amplitude estimate, with a bounded suppression
+            // floor to avoid musical noise. Strength=0 is true unity gain.
+            const wiener=Math.sqrt(Math.max(0,1-oversub*noisePower/signalPower));
+            let g=1-strength*(1-Math.max(floor,wiener));
+            if(p.nr_comb>0&&k>0&&k<bins-1){
+              const neighbors=0.5*(this.mag[k-1]+this.mag[k+1])+1e-8;
+              if(mag>2.2*neighbors)g=Math.max(g,(1-strength)+strength*(0.42+0.4*p.nr_comb));
+            }
+            const prevGain=this.gains[k];
+            this.gains[k]=g>prevGain?0.46*g+0.54*prevGain:0.20*g+0.80*prevGain;
           }
           this.noiseReady=true;
+          if(++this.nrWindowAge>=this.nrWindowFrames){
+            this.nrHistory.set(this.nrWindow,this.nrHistoryIndex*bins);
+            this.nrHistoryIndex=(this.nrHistoryIndex+1)%this.nrHistorySize;
+            if(this.nrHistoryCount<this.nrHistorySize)this.nrHistoryCount++;
+            this.nrWindow.fill(Infinity);this.nrWindowAge=0;
+          }
           const amp=Math.pow(10,Math.max(-12,Math.min(12,p.nr_gain))/20);
-          for(let k=0;k<=n/2;k++){
+          for(let k=0;k<bins;k++){
             let g=this.gains[k];
-            if(k>0&&k<n/2)g=0.2*this.gains[k-1]+0.6*g+0.2*this.gains[k+1];
+            if(k>0&&k<bins-1)g=0.2*this.gains[k-1]+0.6*g+0.2*this.gains[k+1];
             g*=amp;
             this.real[k]*=g;this.imag[k]*=g;
-            if(k>0&&k<n/2){this.real[n-k]*=g;this.imag[n-k]*=g;}
+            if(k>0&&k<bins-1){this.real[n-k]*=g;this.imag[n-k]*=g;}
           }
         }
         this.fft(true);
@@ -486,7 +516,7 @@
     interceptedConnections:interceptCount,heartbeats:r.heartbeat,processedSamples:r.samples,nonzeroInputSamples:r.nonzero,
     lastHeartbeatMs:r.lastHeartbeat?Date.now()-r.lastHeartbeat:null,latencyMs:1000*((r.context.sampleRate>=32000?512:256)-1)/r.context.sampleRate};}
   function status(){const all=[...routes].map(routeStatus);const active=all.some(r=>r.live&&r.lastHeartbeatMs!==null&&r.lastHeartbeatMs<2200);
-    return {build:BUILD,initialized,disabled:userDisabled,dspLive:active,routeCount:routes.size,
+    return {build:BUILD,revision:REVISION,initialized,disabled:userDisabled,dspLive:active,routeCount:routes.size,
       interceptedConnections:interceptCount,mode,engine:all.some(r=>r.processor==='AudioWorklet')?'AudioWorklet':all.some(r=>r.processor==='ScriptProcessor')?'ScriptProcessor':'none',
       sampleRate:all[0]?.sampleRate||null,contextState:all[0]?.contextState||'none',routes:all,errors:errors.slice()};}
   function renderStatus(){if(!statusEl)return;const s=status(),a=s.routes.find(r=>r.live),r=s.routes[0];
@@ -692,7 +722,7 @@
     const style=document.getElementById('af-studio-2-css');if(style)style.remove();
     initialized=false;
   }
-  const api={build:BUILD,init,disable,status,attach,detachAll:()=>[...routes].forEach(detachRoute),
+  const api={build:BUILD,revision:REVISION,init,disable,status,attach,detachAll:()=>[...routes].forEach(detachRoute),
     setFlag,settings:()=>currentDSPSettings(),getMode:()=>mode};
   window.AudioFilterPlugin=api;
   if(window.Plugins&&Plugins.audio_filter){
