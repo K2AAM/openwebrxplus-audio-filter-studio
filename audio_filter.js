@@ -562,19 +562,22 @@
     return rnnoiseSourcePromise;
   }
   async function ensureRnnoise(){
-    if(destroyed||!enabled.nr||resolveModeSettings().nr_engine!=='rnnoise'||resolveModeSettings().nr_snr<=0)return;
-    if(mode!=='ssb'&&mode!=='am'){rnnoiseError='Speech-only (AM or SSB)';updateRNNoiseUI();return;}
+    const p=currentDSPSettings();
+    if(destroyed||!p.nr||p.nr_engine!=='rnnoise'||p.nr_snr<=0)return;
+    // Never start RNNoise for CW/digital/music or at an unsupported clock.
+    if(mode!=='ssb'&&mode!=='am'){updateRNNoiseUI();return;}
     const candidates=[...routes].filter(r=>r.worklet&&r.processor&&!r.destroyed);
-    if(candidates.some(r=>r.context.sampleRate!==48000)){
-      rnnoiseError='RNNoise requires a 48 kHz audio context';updateRNNoiseUI();return;
-    }
-    if(!candidates.length){rnnoiseError='Waiting for 48 kHz AudioWorklet';updateRNNoiseUI();return;}
-    if(candidates.every(r=>r.rnnoiseState==='ready')){rnnoiseError='';updateRNNoiseUI();return;}
-    rnnoiseError='Loading optional RNNoise module…';updateRNNoiseUI();
+    const pending=candidates.filter(r=>r.context.sampleRate===48000&&
+      !['ready','loading','error'].includes(r.rnnoiseState));
+    if(!pending.length){updateRNNoiseUI();return;}
+    // Mark loading BEFORE awaiting the asset/module. This prevents repeated
+    // settings broadcasts from racing addModule and sending duplicate init.
+    for(const r of pending)r.rnnoiseState='loading';
+    rnnoiseError='';updateRNNoiseUI();
     try{
       const source=await fetchRnnoiseSource();
-      for(const r of candidates){
-        if(destroyed||r.destroyed)continue;
+      for(const r of pending){
+        if(destroyed||r.destroyed||r.rnnoiseState!=='loading')continue;
         if(!rnnoiseWorkletLoads.has(r.context)){
           const moduleUrl=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));
           const load=r.context.audioWorklet.addModule(moduleUrl)
@@ -583,31 +586,68 @@
           rnnoiseWorkletLoads.set(r.context,load);
         }
         await rnnoiseWorkletLoads.get(r.context);
-        if(!r.destroyed&&r.processor&&r.processor.port&&r.rnnoiseState!=='ready'){
-          r.rnnoiseState='loading';
+        if(!r.destroyed&&r.processor&&r.processor.port&&r.rnnoiseState==='loading')
           r.processor.port.postMessage({type:'rnnoise-init'});
-        }
       }
     }catch(e){
-      rnnoiseError='RNNoise unavailable: '+String(e.message||e);
-      errorLog(e,'optional RNNoise');updateRNNoiseUI();
+      rnnoiseError='RNNoise unavailable: '+String(e&&e.message||e);
+      for(const r of pending)if(!r.destroyed&&r.rnnoiseState==='loading'){
+        r.rnnoiseState='error';r.rnnoiseFailure=rnnoiseError;
+      }
+      errorLog(e,'optional RNNoise');
+      updateRNNoiseUI();
     }
+  }
+  function retryRnnoise(){
+    const p=currentDSPSettings();
+    if(destroyed||!p.nr||p.nr_engine!=='rnnoise'||p.nr_snr<=0)return;
+    const failed=[...routes].filter(r=>r.rnnoiseState==='error'&&r.worklet&&!r.destroyed);
+    if(!failed.length)return;
+    rnnoiseError='';
+    for(const r of failed){
+      r.rnnoiseState='not-loaded';r.rnnoiseFailure='';
+      // The Worklet already has the WASM wrapper loaded, but its own error
+      // latch intentionally prevents automatic retry. Explicitly clear it.
+      if(rnnoiseWorkletLoads.has(r.context)&&r.processor?.port){
+        r.rnnoiseState='loading';
+        r.processor.port.postMessage({type:'rnnoise-retry'});
+      }
+    }
+    updateRNNoiseUI();
+    void ensureRnnoise(); // missing/failed asset can be fetched again
   }
   function updateRNNoiseUI(){
     if(!panel)return;
     const select=panel.querySelector('#af2-nr-engine');
     const note=panel.querySelector('#af2-rnnoise-note');
+    const retry=panel.querySelector('#af2-rnnoise-retry');
     const p=currentDSPSettings();
     if(select)select.value=p.nr_engine==='rnnoise'?'rnnoise':'classic';
-    if(note){
-      const active=[...routes].find(r=>r.rnnoiseState==='ready');
-      note.textContent=p.nr_engine!=='rnnoise'
-        ?'Classical spectral NR (default). RNNoise is optional for speech.'
-        :!enabled.nr?'Enable NR to start experimental RNNoise.'
-        :p.nr_snr<=0?'NR Strength 0 bypasses RNNoise; raise Strength to load it.'
-        :rnnoiseError||(active?'RNNoise ready · 48 kHz · speech only · +10 ms · Strength = wet mix':
-        'Loading RNNoise; classical NR continues until ready.');
+    const route=[...routes].find(r=>r.working&&r.processor)||
+      [...routes].find(r=>r.processor);
+    const possible=p.nr&&p.nr_snr>0&&p.nr_engine==='rnnoise'&&
+      (p.mode==='ssb'||p.mode==='am');
+    const fallback=!!route&&route.rnnoiseState==='error';
+    if(retry){
+      retry.hidden=!(possible&&fallback&&route.worklet&&route.context.sampleRate===48000);
+      retry.disabled=!possible||!fallback;
     }
+    if(!note)return;
+    if(p.nr_engine!=='rnnoise')
+      note.textContent='Classical spectral NR selected · RNNoise available for speech.';
+    else if(!p.nr)note.textContent='NR OFF · enable NR to start the neural engine.';
+    else if(p.nr_snr<=0)note.textContent='Strength 0 · RNNoise bypassed.';
+    else if(p.mode!=='ssb'&&p.mode!=='am')
+      note.textContent='Classical fallback · RNNoise supports spoken AM/SSB only.';
+    else if(!route)note.textContent='Waiting for receiver audio route; classical NR remains available.';
+    else if(!route.worklet)note.textContent='Classical fallback · RNNoise needs AudioWorklet.';
+    else if(route.context.sampleRate!==48000)
+      note.textContent='Classical fallback · RNNoise needs a 48 kHz audio context.';
+    else if(fallback)
+      note.textContent='Classical fallback · '+(route.rnnoiseFailure||rnnoiseError||'RNNoise failed')+' · Retry available.';
+    else if(route.rnnoiseState==='ready')
+      note.textContent='RNNoise ACTIVE · 48 kHz · speech-only · Strength = dry/wet mix.';
+    else note.textContent='RNNoise loading · classical NR remains active until ready.';
   }
   function originalConnect(source,dest,args=[]){return originals.connect.call(source,dest,...args);}
   function bypass(r,reason){
