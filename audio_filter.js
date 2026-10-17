@@ -35,6 +35,14 @@
   // Pure, dependency-free processing core. The very same function is serialized
   // into an AudioWorklet module and called in the ScriptProcessor fallback.
   function createDSPCore() {
+    // Canonical values shared by the AudioWorklet, fallback and Studio UI.
+    // Keep inside the factory: it is serialized into the Worklet module.
+    const defaults=Object.freeze({mode:'ssb',nb:false,nr:false,notch:false,eq:false,comp:false,
+      highpassFreq:150,lowpassFreq:2800,peakingFreq:1450,peakingQ:0.85,peakingGain:0,
+      gain:1,airFreq:3600,airGain:0,loudness:false,loudnessGain:0,
+      nr_alpha:0.975,nr_snr:8,nr_gain:0,nr_comb:0.2,nr_speech_mode:true,
+      agcTarget:0.32,maxBoost:8,gateThresh:0.008,hangTime:0.18,recoveryTime:0.45,
+      compGain:1,compHPF:150,compLPF:3000,notchQ:35,maxNotches:2});
     class Biquad {
       constructor(rate) { this.rate=rate; this.b0=1;this.b1=0;this.b2=0;this.a1=0;this.a2=0;this.z1=0;this.z2=0; }
       set(type, freq, q=0.707, gain=0) {
@@ -104,12 +112,6 @@
         if(inverse){for(let i=0;i<n;i++){r[i]/=n;im[i]/=n;}}
       }
       setSettings(s) {
-        const defaults={mode:'ssb',nb:false,nr:false,notch:false,eq:false,comp:false,
-          highpassFreq:150,lowpassFreq:2800,peakingFreq:1450,peakingQ:0.85,peakingGain:0,
-          gain:1,airFreq:3600,airGain:0,loudness:false,loudnessGain:0,
-          nr_alpha:0.975,nr_snr:8,nr_gain:0,nr_comb:0.2,nr_speech_mode:true,
-          agcTarget:0.32,maxBoost:8,gateThresh:0.008,hangTime:0.18,recoveryTime:0.45,
-          compGain:1,compHPF:150,compLPF:3000,notchQ:35,maxNotches:2};
         const prev=this.settings || defaults;
         this.settings=Object.assign({},defaults,prev,s);
         const p=this.settings;
@@ -230,6 +232,7 @@
         return Math.max(-1,Math.min(1,Number.isFinite(out)?out:0));
       }
     }
+    DSPCore.defaults=defaults;
     return DSPCore;
   }
 
@@ -259,6 +262,11 @@
   function safeStorageSet(k,v){try{localStorage.setItem(k,v);}catch(e){errorLog(e,'localStorage');}}
   function normalizeMode(m){m=String(m||'ssb').toLowerCase();if(m==='lsb'||m==='usb')return 'ssb';if(m==='fm')return 'nfm';if(['dmr','ysf','dstar','nxdn','m17','p25','freedv'].includes(m))return 'digital';return presets[m]?m:'ssb';}
   function cleanProfile(obj){return Object.fromEntries(Object.entries(obj||{}).filter(([,value])=>value!==null&&value!==undefined));}
+  // Store only user overrides, not copied defaults: future versions can revise
+  // presets without silently freezing old values into localStorage.
+  function resolveModeSettings(currentMode=mode, overrides=settings){
+    return Object.assign({},DSPCore.defaults,presets[currentMode],cleanProfile(overrides));
+  }
   function readReceiverMode(){try{
     if(window.UI && typeof UI.getDemodulator==='function'){const d=UI.getDemodulator();if(d&&typeof d.get_modulation==='function')return normalizeMode(d.get_modulation());}
     if(typeof window.get_demodulator==='function')return normalizeMode(window.get_demodulator());
@@ -274,12 +282,12 @@
         else if(Object.keys(obj).length)settingsStore.ssb=obj;
       }
     }catch(e){errorLog(e,'restore profiles');}
-    mode=readReceiverMode();settings=Object.assign({},presets[mode],cleanProfile(settingsStore[mode]));
+    mode=readReceiverMode();settings=cleanProfile(settingsStore[mode]);
   }
   function saveSettings(){settingsStore[mode]=Object.assign({},settings);safeStorageSet(STORAGE+'settings',JSON.stringify(settingsStore));}
   function updateParameter(key,value){settings[key]=value;saveSettings();syncSettings();}
   function syncSettings(){
-    const p=Object.assign({},presets[mode],cleanProfile(settings),{mode,eq:enabled.eq,nb:enabled.nb,nr:enabled.nr,notch:enabled.notch,comp:enabled.comp,loudness:enabled.loudness});
+    const p=Object.assign({},resolveModeSettings(),{mode,eq:enabled.eq,nb:enabled.nb,nr:enabled.nr,notch:enabled.notch,comp:enabled.comp,loudness:enabled.loudness});
     for(const r of routes){
       if(r.engine){r.engine.setSettings(p);}
       if(r.processor&&r.processor.port)try{r.processor.port.postMessage({type:'settings',value:p});}catch(e){errorLog(e,'send settings');}
@@ -446,7 +454,7 @@
   }
   function poll(){
     if(destroyed)return;
-    const next=readReceiverMode();if(next!==mode){saveSettings();mode=next;settings=Object.assign({},presets[mode],cleanProfile(settingsStore[mode]));syncSettings();refreshSliders();}
+    const next=readReceiverMode();if(next!==mode){saveSettings();mode=next;settings=cleanProfile(settingsStore[mode]);syncSettings();refreshSliders();}
     for(const r of routes){if(r.working&&Date.now()-r.lastHeartbeat>2500)bypass(r,'WATCHDOG');}
     renderStatus();
   }
@@ -493,7 +501,7 @@
     const lbl=document.createElement('label');lbl.textContent=label;lbl.setAttribute('for','af2-'+key);
     const out=document.createElement('output');out.id='af2-'+key+'-value';
     const inp=document.createElement('input');inp.id='af2-'+key;inp.type='range';inp.min=min;inp.max=max;inp.step=step;
-    const v=settings[key]??presets[mode][key]??min;inp.value=Number(v);
+    const v=resolveModeSettings()[key]??min;inp.value=Number(v);
     out.textContent=formatValue(Number(inp.value),unit);
     listen(inp,'input',()=>{out.textContent=formatValue(Number(inp.value),unit);setKnobRotation(key,Number(inp.value),min,max);updateParameter(key,Number(inp.value));});
     if(advanced){root.append(lbl,inp,out);return root;}
@@ -516,12 +524,15 @@
     knob.style.setProperty('--angle',(-125+(Number(inp.value)-min)/(max-min)*250)+'deg');
     knob.setAttribute('aria-valuenow',String(inp.value));return root;
   }
-  function refreshSliders(){for(const [key,,min,max,,unit] of sliders){
+  function refreshSliders(){const resolved=resolveModeSettings();for(const [key,,min,max,,unit] of sliders){
     const el=document.getElementById('af2-'+key);if(!el)continue;
-    el.value=Number(settings[key]??presets[mode][key]??min);
+    el.value=Number(resolved[key]??min);
     const out=document.getElementById('af2-'+key+'-value');if(out)out.textContent=formatValue(Number(el.value),unit||'');
     setKnobRotation(key,Number(el.value),min,max);
-  }}
+  }
+    const speech=panel&&panel.querySelector('#af2-speech-preservation');
+    if(speech)speech.checked=resolved.nr_speech_mode!==false;
+  }
 
   function updateToggles(){if(!panel)return;for(const flag of Object.keys(enabled)){
     const el=panel.querySelector(`[data-af-flag="${flag}"]`);if(el){el.classList.toggle('on',enabled[flag]);el.setAttribute('aria-pressed',String(enabled[flag]));}
@@ -595,10 +606,10 @@
           settingsStore[key]=profile;
         }
         if(obj.enabled&&typeof obj.enabled==='object')for(const flag of Object.keys(enabled)){if(typeof obj.enabled[flag]==='boolean'){enabled[flag]=obj.enabled[flag];safeStorageSet(STORAGE+persistentKeys[flag],String(enabled[flag]));}}
-        settings=Object.assign({},presets[mode],cleanProfile(settingsStore[mode]));saveSettings();syncSettings();refreshSliders();
+        settings=cleanProfile(settingsStore[mode]);saveSettings();syncSettings();refreshSliders();
       }catch(e){errorLog(e,'import settings');renderStatus();}};input.click();
     });
-    listen(panel.querySelector('#af2-reset'),'click',()=>{settingsStore[mode]={};settings=Object.assign({},presets[mode]);saveSettings();syncSettings();refreshSliders();});
+    listen(panel.querySelector('#af2-reset'),'click',()=>{settingsStore[mode]={};settings={};saveSettings();syncSettings();refreshSliders();});
     // Keep original optional loudness switch, without taking space in the top row.
     const loud=document.createElement('label');loud.style.cssText='display:flex;gap:7px;margin-top:9px';
     const loudCheck=document.createElement('input');loudCheck.type='checkbox';loudCheck.checked=enabled.loudness;
@@ -606,7 +617,7 @@
     loud.append(loudCheck,document.createTextNode('Enable bass loudness shelf (requires EQ)'));
     panel.querySelector('#af2-advanced').appendChild(loud);
     const speech=document.createElement('label');speech.style.marginTop='10px';speech.style.display='flex';speech.style.gap='7px';
-    const check=document.createElement('input');check.type='checkbox';check.checked=settings.nr_speech_mode!==false;
+    const check=document.createElement('input');check.id='af2-speech-preservation';check.type='checkbox';check.checked=resolveModeSettings().nr_speech_mode!==false;
     listen(check,'change',()=>updateParameter('nr_speech_mode',check.checked));speech.append(check,document.createTextNode('Speech preservation'));panel.querySelector('#af2-advanced').appendChild(speech);
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addButton==='function'){
       try{Plugins.addButton(ID,'AF',openPanel);}catch(e){errorLog(e,'Plugins.addButton');}
@@ -637,7 +648,7 @@
     initialized=false;
   }
   const api={build:BUILD,init,disable,status,attach,detachAll:()=>[...routes].forEach(detachRoute),
-    setFlag,settings:()=>Object.assign({},settings),getMode:()=>mode};
+    setFlag,settings:()=>resolveModeSettings(),getMode:()=>mode};
   window.AudioFilterPlugin=api;
   if(window.Plugins&&Plugins.audio_filter){
     Plugins.audio_filter.no_css=true;
