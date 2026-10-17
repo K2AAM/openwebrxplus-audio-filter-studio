@@ -24,3 +24,7 @@ jobs:
         run: node tests/validate-speech-nr.cjs
       - name: Studio 2.2 beta.2 SSB body and A/B
         run: node tests/validate-ssb-compare.cjs
+      - name: RNNoise worklet and classical failback simulation
+        run: node tests/validate-rnnoise.cjs
+      - name: RNNoise pinned WebAssembly integration smoke
+        run: bash tests/validate-rnnoise-bundle.sh

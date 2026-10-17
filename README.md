@@ -1,6 +1,6 @@
-# Audio Filter Studio for OpenWebRX+ — 2.2 beta.2
+# Audio Filter Studio for OpenWebRX+ — 2.3 beta.1 (RNNoise experiment)
 
-**Status: 2.2.0-beta.2 development candidate.** Beta.1 has been exercised live on AM/SSB with substantial hiss reduction and intelligible weak stations, though voices can remain thin. Beta.2 adds optional SSB-only voice-body preservation, a retuned Weak SSB/DX preset, and a transient A/B level-match feature. CI passes; beta.2 still needs on-air evaluation. All new code is MIT licensed.
+**Status: 2.3.0-beta.1 experimental candidate.** Classical spectral NR from the working 2.2 branch is unchanged and remains the default. The optional, self-hosted RNNoise/WASM voice-only path has passed pinned-binary and single-worklet integration tests, but **has not yet been verified in Safari/OpenWebRX+ on-air**. The Studio source remains MIT licensed; the optional upstream WebAssembly bundle has its own BSD/Apache license notices.
 
 Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 2026 contributors. **MIT license.**
 
@@ -12,6 +12,36 @@ Original concept: Copyright (c) 2025 DL1HQH. New architecture and interface: 202
 - **Better observability.** `AudioFilterPlugin.status()` reports actual routes, processor type, context state, heartbeats, nonzero input samples, intercept count, and errors. The Studio UI displays `DSP ACTIVE`, `FALLBACK`, `CONNECTING`, `NOT ROUTED`, `BYPASS`, or `DSP ERROR · BYPASS`.
 - **Native receiver plugin UI.** Uses `Plugins.addButton` and `Plugins.addWindow` when available, with inline CSS and no dependencies. Advanced controls, JSON settings import/export, and original per-mode localStorage settings are retained; existing `null` overrides are treated as unset.
 - **Lifecycle handling.** `AudioFilterPlugin.disable()` first connects the original source to the destination, disconnects injected nodes, restores the original `connect` function where still owned, removes observers/event listeners, and cancels RAF/intervals.
+
+## Experimental speech enhancement: RNNoise WASM (2.3.0-beta.1)
+
+Studio can now select **Classical spectral NR (default)** or **RNNoise WASM · experimental speech only** in the advanced panel. Unlike classical NR, RNNoise uses a trained recurrent neural network to separate voice from noise; it may dramatically suppress hiss but may also remove weak syllables, tones, music, or non-speech HF signals. It is for **spoken voice on USB/LSB or AM**, not CW, digital decoding, or AM music. The choice is saved separately for each modulation and included in normal JSON export/import.
+
+**Strictly optional and fail-safe.** Studio does *not* include or download RNNoise automatically for ordinary listeners. When you explicitly select the experimental engine with NR enabled, the browser fetches a same-origin `rnnoise-sync.js` bundle located alongside `audio_filter.js`. The pinned vendor asset bundles 1.9 MiB of JavaScript and WebAssembly and is installed separately with `scripts/install-rnnoise.sh`. If the file is missing, fails to load, is unsupported, or model inference fails, **classical spectral NR keeps running**. Check the status under the selector and `AudioFilterPlugin.status().rnnoiseError` / `.routes[0].rnnoiseState` when diagnosing a fallback. A model inference exception automatically restores classical NR without taking down the AudioWorklet. The optional asset and model never contact a remote denoising service when running; processing stays in the listener's browser.
+
+**48 kHz only.** RNNoise processes 480 samples per 10-ms mono frame at 48,000 samples/s and expects float PCM in 16-bit PCM amplitude units. Our adapter scales input/output appropriately, feeds the *existing* single AudioWorklet, and keeps EQ, NB, notch, and compressor after the neural frame processor. **NR Strength 0** bypasses RNNoise entirely; values **1–30** control the neural wet/dry blend. Both dry and neural frames are aligned to the same 480-sample delay so intermediate values do not introduce comb filtering. NR Character, Speech Preservation and SSB Voice Body remain *classical-only* settings while RNNoise is selected. It does not run classical spectral NR simultaneously with RNNoise. This adds approximately **10 ms** buffering on top of the normal Studio STFT delay. No FFT size, hop, original routing graph, or Worklet registration is changed. At other audio-context rates or unsupported modulations, the application stays with classical NR instead of silently resampling or interpreting audio at the wrong speed. RNNoise is not available in the ScriptProcessor fallback.
+
+**On the OptiPlex (after checking out this experimental branch):**
+
+```bash
+cd ~/openwebrxplus-audio-filter-studio
+git fetch origin
+git switch feature/studio-2-3-rnnoise-experimental
+git pull --ff-only
+sudo cp -p /usr/lib/python3/dist-packages/htdocs/plugins/receiver/audio_filter/audio_filter.js \
+  /usr/lib/python3/dist-packages/htdocs/plugins/receiver/audio_filter/audio_filter.js.pre-rnnoise-backup
+sudo install -m 644 audio_filter.js \
+  /usr/lib/python3/dist-packages/htdocs/plugins/receiver/audio_filter/audio_filter.js
+bash scripts/install-rnnoise.sh
+```
+
+The installer fetches the **pinned Jitsi RNNoise WASM 0.2 synchronous build** (upstream commit `cb529a59a8478fe604e57986fc96afdaecfa6fb7`), verifies its Git blob SHA-1 `d054e0640b918141ee80f7b6e2eb5bcac9fe38a4`, and installs the Apache and BSD notices beside the module. `curl` and `git` must be present. The existing plug-in and `init.js` do not require any other changes.
+
+Hard-refresh the SDR browser, tune a voice station, ensure **NR ON**, open Advanced and choose `NR engine → RNNoise WASM`. Wait for `RNNoise ready`. If it says loading, unavailable, or classical fallback, the comparison is not running neural suppression. Toggle back to **Classical spectral** to compare; use the same station and receiver bandwidth. Existing **Match levels** A/B is intentionally disabled while in RNNoise mode because it compares classical suppression with the untreated reference, not the two different engines.
+
+**Known limitations:** The first initialization of the large synchronous WebAssembly model may cause a brief audio interruption; fail-open dry audio remains available if the Worklet stops heartbeating. Safari/WebKit performance and browser policies have not been validated live yet. This uses the model packaged upstream by Jitsi, not an HF-trained model; speech distortion, clipped consonants, and false muting on weak stations remain possible. Do not enable it by default for every visitor until listening tests confirm stability.
+
+**Automated checks:** `node tests/validate-rnnoise.cjs` exercises a simulated RNNoise AudioWorklet with 480-sample FIFO, unit scaling, model-absent fallback, unsupported sample rates, mode switching, and the unchanged processor registration. `bash tests/validate-rnnoise-bundle.sh` checks the pinned upstream asset against its hash and executes a real RNNoise frame through its exported WASM API. Both pass in GitHub Actions.
 
 ## What's new in 2.2.0-beta.2
 
