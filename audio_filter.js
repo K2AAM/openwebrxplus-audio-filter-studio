@@ -586,6 +586,12 @@
           rnnoiseWorkletLoads.set(r.context,load);
         }
         await rnnoiseWorkletLoads.get(r.context);
+        const latest=currentDSPSettings();
+        if(latest.nr_engine!=='rnnoise'||!latest.nr||latest.nr_snr<=0||
+           (latest.mode!=='ssb'&&latest.mode!=='am')){
+          if(!r.destroyed&&r.rnnoiseState==='loading')r.rnnoiseState='not-loaded';
+          continue; // user changed their mind during async load
+        }
         if(!r.destroyed&&r.processor&&r.processor.port&&r.rnnoiseState==='loading')
           r.processor.port.postMessage({type:'rnnoise-init'});
       }
