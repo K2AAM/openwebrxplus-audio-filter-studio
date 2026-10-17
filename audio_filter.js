@@ -29,7 +29,7 @@
   'use strict';
   const ID = 'audio_filter';
   const BUILD = 'studio-2.0.0'; // retain compatibility with existing init.js
-  const REVISION = '2.2.0-beta.1';
+  const REVISION = '2.2.0-beta.2';
   const STORAGE = 'openwebrx-audio-filter-';
   if (window.AudioFilterPlugin && window.AudioFilterPlugin.build === BUILD) return;
 
@@ -42,6 +42,7 @@
       highpassFreq:150,lowpassFreq:2800,peakingFreq:1450,peakingQ:0.85,peakingGain:0,
       gain:1,airFreq:3600,airGain:0,loudness:false,loudnessGain:0,
       nr_alpha:0.975,nr_snr:8,nr_gain:0,nr_comb:0.2,nr_speech_mode:true,nr_character:0.35,
+      nr_body:0,nr_ab_reference:false,nr_ab_gain:1,
       agcTarget:0.32,maxBoost:8,gateThresh:0.008,hangTime:0.18,recoveryTime:0.45,
       compGain:1,compHPF:150,compLPF:3000,notchQ:35,maxNotches:2});
     class Biquad {
@@ -262,6 +263,16 @@
             const region=Math.max(this.nrSpeechProb[k],0.72*near1,0.42*near2);
             target+=(1-target)*protection*region;
 
+            // SSB voice body: preserve detected 200-950 Hz speech regions
+            // rather than boosting the low-frequency noise floor. Unlike
+            // EQ, this only reduces NR attenuation when speech is likely.
+            if(p.mode==='ssb'&&p.nr_body>0){
+              const hz=k*this.rate/this.N;
+              const shape=Math.max(0,1-Math.abs(hz-575)/375);
+              const body=Math.min(1,Math.max(0,p.nr_body));
+              target+=(1-target)*0.40*body*shape*region;
+            }
+
             // Keep the original tonal guard; region protection also
             // helps broader formants spanning adjacent FFT bins.
             if(p.nr_comb>0&&k>0&&k<bins-1){
@@ -289,6 +300,9 @@
             if(this.nrHistoryCount<this.nrHistorySize)this.nrHistoryCount++;
             this.nrWindowAge=0;
           }
+          // A/B reference keeps the SAME estimator running, but does not
+          // attenuate FFT bins. No reset or new processor/audio route.
+          if(!p.nr_ab_reference){
           const amp=Math.pow(10,Math.max(-12,Math.min(12,p.nr_gain))/20);
           for(let k=0;k<bins;k++){
             let gain=this.gains[k];
@@ -299,6 +313,7 @@
             if(k>0&&k<bins-1){
               this.real[n-k]*=gain;this.imag[n-k]*=gain;
             }
+          }
           }
         }
         this.fft(true);
@@ -338,7 +353,11 @@
           this.compGain+=(desired-this.compGain)*k;
           y=Math.tanh(y*this.compGain)*(p.compGain||1);
         }
-        const out=y*Math.max(0,Math.min(3,p.gain));
+        // Transient calibrated NR A/B gain applies only to the processed
+        // side. Ordinary playback and strength-zero bypass remain unchanged.
+        const compareGain=p.nr&&p.nr_snr>0&&!p.nr_ab_reference?
+          Math.max(0.5,Math.min(2,p.nr_ab_gain||1)):1;
+        const out=y*Math.max(0,Math.min(3,p.gain))*compareGain;
         return Math.max(-1,Math.min(1,Number.isFinite(out)?out:0));
       }
     }
@@ -359,7 +378,7 @@
   // change on explicit selection, never on automatic modulation switching.
   const listeningPresets={
     ssb:[
-      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:200,lowpassFreq:2750,peakingFreq:1650,peakingGain:2.5,nr_snr:19,nr_alpha:0.965,nr_comb:0.3,nr_speech_mode:true,nr_character:0.45},flags:{eq:true,nr:true,comp:false}},
+      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:26,nr_alpha:0.970,nr_comb:0.25,nr_speech_mode:true,nr_character:0.80,nr_body:0.65},flags:{eq:true,nr:true,comp:false}},
       {id:'wide-ssb',label:'Wide SSB',params:{highpassFreq:85,lowpassFreq:4000,peakingFreq:1500,peakingGain:0,nr_snr:6},flags:{eq:true,nr:false}}
     ],
     am:[
@@ -376,6 +395,7 @@
   const enabled={eq:false,nb:false,nr:false,notch:false,comp:false,loudness:false};
   let settingsStore={};
   let mode='ssb', settings={}, initialized=false, destroyed=false, userDisabled=false;
+  let compareReference=false,compareGain=1,compareCalibrating=false;
   let windowNode=null, panel=null, statusEl=null, ledEl=null, canvas=null, canvasCtx=null;
   const routes=new Set(), errors=[], observedSources=new Set();
   let interceptCount=0, animationId=0, pollingId=0, watchdogId=0, workletUrl=null;
@@ -413,6 +433,7 @@
   function applyListeningPreset(id){
     const preset=choicesForMode().find(p=>p.id===id);
     if(!preset)return false;
+    compareReference=false;compareGain=1;
     settings=cleanProfile(preset.params);saveSettings();
     if(preset.flags)for(const [key,value] of Object.entries(preset.flags)){
       if(!Object.prototype.hasOwnProperty.call(enabled,key))continue;
@@ -431,7 +452,8 @@
     // sent to both DSP engines, including live modulation and global toggles.
     return Object.assign({},resolveModeSettings(),{
       mode,eq:enabled.eq,nb:enabled.nb,nr:enabled.nr,notch:enabled.notch,
-      comp:enabled.comp,loudness:enabled.loudness
+      comp:enabled.comp,loudness:enabled.loudness,
+      nr_ab_reference:compareReference&&enabled.nr,nr_ab_gain:compareGain
     });
   }
   function readReceiverMode(){
@@ -488,7 +510,7 @@
     mode=readReceiverMode();settings=cleanProfile(settingsStore[mode]);
   }
   function saveSettings(){settingsStore[mode]=Object.assign({},settings);safeStorageSet(STORAGE+'settings',JSON.stringify(settingsStore));}
-  function updateParameter(key,value){settings[key]=value;saveSettings();syncSettings();refreshPresetSelector();}
+  function updateParameter(key,value){settings[key]=value;compareGain=1;saveSettings();syncSettings();refreshPresetSelector();}
   function syncSettings(){
     const p=currentDSPSettings();
     for(const r of routes){
@@ -497,7 +519,8 @@
     }
     updateToggles();
   }
-  function setFlag(flag,on){enabled[flag]=!!on;safeStorageSet(STORAGE+persistentKeys[flag],String(!!on));syncSettings();}
+  function setFlag(flag,on){enabled[flag]=!!on;compareGain=1;if(flag==='nr')compareReference=false;
+    safeStorageSet(STORAGE+persistentKeys[flag],String(!!on));syncSettings();}
 
   function makeWorkletSource(){
     return `"use strict";\nconst DSPCore=(${createDSPCore.toString()})();\n`+
@@ -657,7 +680,7 @@
   }
   function poll(){
     if(destroyed)return;
-    const next=readReceiverMode();if(next!==mode){saveSettings();mode=next;settings=cleanProfile(settingsStore[mode]);syncSettings();refreshSliders();}
+    const next=readReceiverMode();if(next!==mode){saveSettings();mode=next;compareReference=false;compareGain=1;settings=cleanProfile(settingsStore[mode]);syncSettings();refreshSliders();}
     for(const r of routes){if(r.working&&Date.now()-r.lastHeartbeat>2500)bypass(r,'WATCHDOG');}
     renderStatus();
   }
@@ -672,7 +695,8 @@
     ['recoveryTime','AGC recovery',0.08,2,0.02,' s'],['compGain','Comp output',0.1,2,0.05,'×'],
     ['notchQ','Notch Q',10,80,1,''],['maxNotches','Max notches',0,2,1,''],
     ['nr_gain','NR output gain',-12,12,1,' dB'],['nr_comb','NR tonal guard',0,1,0.05,''],
-    ['nr_character','NR Character',0,1,0.05,'']
+    ['nr_character','NR Character',0,1,0.05,''],
+    ['nr_body','SSB voice body',0,1,0.05,'']
   ];
   const css=`
     .af2{font:12px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:#dfe6ee;background:linear-gradient(160deg,#1b242e,#111923);padding:12px;border-radius:9px;max-width:660px;min-width:330px;box-sizing:border-box;}
@@ -696,6 +720,8 @@
     .af2-adv label{display:block;color:#9db0c3;font-size:11px}.af2-adv input{width:100%}
     .af2-bottom{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:11px;color:#8095a7;font-size:11px}
     .af2-bottom button{padding:4px 8px;font-size:10px}.af2 .af2-fail{color:#e6bc62}
+    .af2-compare{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px}.af2-compare button{padding:6px 10px}
+    .af2-compare-info{font-size:10px;color:#91a7b9;min-width:210px}
     @media(max-width:470px){.af2-controls{grid-template-columns:repeat(2,1fr)}.af2{min-width:280px}.af2-buttons{grid-template-columns:repeat(3,1fr)}}
   `;
   function formatValue(v,unit){return (v<1?Number(v).toFixed(3):v<10?Number(v).toFixed(2):Math.round(v))+unit;}
@@ -745,7 +771,78 @@
 
   function updateToggles(){if(!panel)return;for(const flag of Object.keys(enabled)){
     const el=panel.querySelector(`[data-af-flag="${flag}"]`);if(el){el.classList.toggle('on',enabled[flag]);el.setAttribute('aria-pressed',String(enabled[flag]));}
-  }}
+  }updateCompareUI();}
+  // Temporary A/B state: never saved and never changes the audio graph.
+  function updateCompareUI(message){
+    if(!panel)return;
+    const button=panel.querySelector('#af2-compare');
+    const match=panel.querySelector('#af2-match');
+    const hint=panel.querySelector('#af2-compare-info');
+    if(button){
+      button.disabled=!enabled.nr||compareCalibrating;
+      button.textContent=compareReference?'A/B: REFERENCE':'A/B: PROCESSED';
+      button.setAttribute('aria-pressed',String(compareReference));
+    }
+    if(match){
+      match.disabled=!enabled.nr||compareCalibrating;
+      match.textContent=compareCalibrating?'Measuring…':'Match levels';
+    }
+    if(hint){
+      const db=20*Math.log10(compareGain);
+      hint.textContent=message||(enabled.nr?
+        (compareReference?'Reference · NR off; other DSP unchanged':
+          'Processed · NR on')+
+        ' · level match '+(db>=0?'+':'')+db.toFixed(1)+' dB':
+        'Enable NR to compare; other DSP stays unchanged');
+    }
+  }
+  function toggleCompare(){
+    if(!enabled.nr||compareCalibrating)return;
+    compareReference=!compareReference;syncSettings();
+  }
+  function delay(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+  async function calibrateCompare(){
+    if(!enabled.nr||compareCalibrating)return;
+    const r=[...routes].find(x=>x.working&&x.output&&
+      typeof x.output.getFloatTimeDomainData==='function');
+    if(!r){updateCompareUI('Level match requires an active DSP route');return;}
+    const savedReference=compareReference,savedGain=compareGain;
+    const modeAtStart=mode,settingsAtStart=currentDSPSettings();
+    compareCalibrating=true;compareGain=1;
+    const buffer=new Float32Array(r.output.fftSize);
+    const power=async()=>{
+      let sum=0,count=0;
+      await delay(200); // worklet message and overlap-add settle
+      for(let j=0;j<12;j++){
+        if(destroyed||!routes.has(r)||!r.working||mode!==modeAtStart||
+           !enabled.nr||settingsAtStart.nr_snr!==currentDSPSettings().nr_snr)
+          throw Error('Receiver settings or audio route changed during level match');
+        r.output.getFloatTimeDomainData(buffer);
+        for(let i=0;i<buffer.length;i++)sum+=buffer[i]*buffer[i];
+        count+=buffer.length;
+        await delay(75);
+      }
+      return sum/count;
+    };
+    try{
+      compareReference=true;syncSettings();
+      updateCompareUI('Measuring reference (no NR)…');
+      const referencePower=await power();
+      compareReference=false;syncSettings();
+      updateCompareUI('Measuring processed NR…');
+      const processedPower=await power();
+      if(!(referencePower>1e-10&&processedPower>1e-10))
+        throw Error('Audio too quiet for level match');
+      // Fixed, bounded RMS adjustment; not a true speech-loudness model.
+      // Reference and processed samples are gathered sequentially.
+      compareGain=Math.max(0.5,Math.min(2,Math.sqrt(referencePower/processedPower)));
+    }catch(e){
+      compareGain=savedGain;
+      errorLog(e,'NR level match');
+    }finally{
+      compareReference=savedReference;compareCalibrating=false;syncSettings();
+    }
+  }
   function renderSpectrum(){
     if(!canvas||destroyed||!panel||panel.offsetWidth===0)return;
     const width=Math.max(200,Math.floor(canvas.clientWidth*devicePixelRatio)),height=Math.max(100,Math.floor(185*devicePixelRatio));
@@ -789,8 +886,9 @@
       <div class="af2-buttons">${[['nb','NB'],['notch','Notch'],['nr','NR'],['eq','EQ'],['comp','Comp']].map(([k,t])=>`<button type="button" data-af-flag="${k}">${t}</button>`).join('')}<button type="button" id="af2-settings" aria-expanded="false" title="Advanced DSP settings">⋯</button></div>
       <canvas id="af2-spectrum" aria-label="Input and output audio spectrum"></canvas>
       <div class="af2-line"><span>● Input &nbsp; <span style="color:#48bfe8">● Output</span></span><span id="af-studio-meta">Awaiting receiver audio route</span></div>
+      <div class="af2-compare"><button type="button" id="af2-compare" aria-pressed="false">A/B: PROCESSED</button><button type="button" id="af2-match">Match levels</button><span id="af2-compare-info" class="af2-compare-info">Enable NR to compare</span></div>
       <div class="af2-controls" id="af2-quick"></div><section class="af2-advanced" id="af2-advanced"><div class="af2-grid" id="af2-advanced-grid"></div></section>
-      <div class="af2-bottom"><span>Studio 2.2 beta · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
+      <div class="af2-bottom"><span>Studio 2.2 beta.2 · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addWindow==='function'){
       try{windowNode=Plugins.addWindow(ID,'Audio Filter Studio',markup);}catch(e){errorLog(e,'Plugins.addWindow');}
     }
@@ -801,6 +899,8 @@
     const quick=panel.querySelector('#af2-quick'),adv=panel.querySelector('#af2-advanced-grid');
     for(let i=0;i<sliders.length;i++){(i<4?quick:adv).appendChild(makeSlider(sliders[i],i>=4));}
     listen(panel.querySelector('#af2-preset'),'change',e=>applyListeningPreset(e.currentTarget.value));
+    listen(panel.querySelector('#af2-compare'),'click',toggleCompare);
+    listen(panel.querySelector('#af2-match'),'click',calibrateCompare);
     for(const b of panel.querySelectorAll('[data-af-flag]'))listen(b,'click',()=>setFlag(b.dataset.afFlag,!enabled[b.dataset.afFlag]));
     listen(panel.querySelector('#af2-settings'),'click',e=>{const a=panel.querySelector('#af2-advanced');a.classList.toggle('open');e.currentTarget.setAttribute('aria-expanded',String(a.classList.contains('open')));});
     listen(panel.querySelector('#af2-bypass'),'click',e=>{userDisabled=!userDisabled;e.currentTarget.textContent=userDisabled?'Enable':'Bypass';
@@ -818,10 +918,10 @@
           settingsStore[key]=profile;
         }
         if(obj.enabled&&typeof obj.enabled==='object')for(const flag of Object.keys(enabled)){if(typeof obj.enabled[flag]==='boolean'){enabled[flag]=obj.enabled[flag];safeStorageSet(STORAGE+persistentKeys[flag],String(enabled[flag]));}}
-        settings=cleanProfile(settingsStore[mode]);saveSettings();syncSettings();refreshSliders();
+        compareReference=false;compareGain=1;settings=cleanProfile(settingsStore[mode]);saveSettings();syncSettings();refreshSliders();
       }catch(e){errorLog(e,'import settings');renderStatus();}};input.click();
     });
-    listen(panel.querySelector('#af2-reset'),'click',()=>{settingsStore[mode]={};settings={};saveSettings();syncSettings();refreshSliders();});
+    listen(panel.querySelector('#af2-reset'),'click',()=>{settingsStore[mode]={};settings={};compareReference=false;compareGain=1;saveSettings();syncSettings();refreshSliders();});
     // Keep original optional loudness switch, without taking space in the top row.
     const loud=document.createElement('label');loud.style.cssText='display:flex;gap:7px;margin-top:9px';
     const loudCheck=document.createElement('input');loudCheck.type='checkbox';loudCheck.checked=enabled.loudness;

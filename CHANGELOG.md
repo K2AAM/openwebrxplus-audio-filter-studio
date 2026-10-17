@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.0-beta.2 — candidate (2026-10-17)
+
+- Add optional **SSB voice body** (`nr_body` 0–1, default 0). Protect the 200–950 Hz speech region only when the existing speech-presence detector indicates wanted signal; no unconditional EQ boost, no AM/CW changes.
+- Retune **Weak SSB/DX** to Strength 26, Character 0.80, Voice body 0.65, high-pass 130 Hz, low-pass 2950 Hz, presence +1.5 dB at 1450 Hz, Comp off. Preserve other factory and saved presets.
+- Add transient, nonpersistent **NR A/B reference** that disables spectral attenuation without disabling the noise estimator or changing the processor graph. The rest of DSP, including EQ/Comp/NB/notch, remains enabled. A/B transitions leave the model's history intact.
+- Add **Match levels** calibration using sequential output-analyser RMS measurements and fixed, bounded (±6 dB) processed-only gain. It approximates broadband power matching, not perceptual speech loudness. Calibration resets on mode/preset/control changes.
+- Preserve original worklet, ScriptProcessor fallback, ring buffers, STFT/OLA, sample-rate behavior, latency, localStorage keys, and MIT license.
+- Add deterministic synthetic tests for SSB selective low-mid tone protection, limited broadband hiss lift, unchanged AM behavior, A/B reference unity, persistent noise-estimator state, and isolated compare compensation. Passed GitHub Actions; on-air listening remains necessary.
+
 ## 2.2.0-beta.1 — in development (2026-10-17)
 
 - **No audio graph changes:** preserve existing FFT, 50% hop, overlap-add and intrinsic latency, single AudioWorklet, fail-open routing, preset storage, and modulation detection.
