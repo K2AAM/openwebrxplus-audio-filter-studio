@@ -16,8 +16,9 @@ const presets = segment('  const presets={', '  const persistentKeys=');
 const resolver = segment('  function cleanProfile(', '  function readReceiverMode(');
 const sliderMeta = segment('  const sliders=[', '  const css=`');
 const ctx=vm.createContext({ Float32Array, Uint16Array, Math, Number, Object, Array, console });
-vm.runInContext(`${dsp}\nconst DSPCore=createDSPCore();\n${presets}\nlet mode='ssb', settings={};\n${resolver}\n${sliderMeta}`,ctx);
+vm.runInContext(`${dsp}\nconst DSPCore=createDSPCore();\n${presets}\nlet mode='ssb', settings={}, enabled={eq:false,nb:false,nr:false,notch:false,comp:false,loudness:false};\n${resolver}\n${sliderMeta}`,ctx);
 const resolve = vm.runInContext('resolveModeSettings',ctx);
+const currentSettings = vm.runInContext('currentDSPSettings',ctx);
 const DSPCore = vm.runInContext('DSPCore',ctx);
 const modes=vm.runInContext('Object.keys(presets)',ctx);
 const sliders=vm.runInContext('sliders',ctx);
@@ -34,8 +35,16 @@ for(const mode of modes){
   assert(Number.isFinite(actual[key]), `${mode}: ${label} (${key}) must resolve to a real number`);
   assert(actual[key]>=min&&actual[key]<=max, `${mode}: ${key}=${actual[key]} out of [${min},${max}]`);
  }
+ assert.equal(actual.mode,mode,`${mode}: resolved mode must match receiver mode`);
  const engine=new DSPCore(48000);engine.setSettings(actual);
+ assert.equal(engine.settings.mode,mode,`${mode}: processor must receive current modulation`);
  for(const [key] of sliders)assert.equal(engine.settings[key],actual[key], `${mode}: UI/processor mismatch for ${key}`);
+ // The public API and the internal DSP routing must report the same mode.
+ vm.runInContext(`mode=${JSON.stringify(mode)};settings={};`,ctx);
+ const visible=currentSettings();
+ assert.equal(visible.mode,mode,`${mode}: public settings() must report active mode`);
+ assert.equal(visible.highpassFreq,actual.highpassFreq);
+ assert.equal(visible.lowpassFreq,actual.lowpassFreq);
 }
 assert.equal(resolve('ssb',{}).lowpassFreq,2800,'SSB preset takes precedence over core defaults');
 assert.equal(resolve('am',{}).lowpassFreq,8000,'AM preset takes precedence over core defaults');
@@ -44,6 +53,15 @@ assert.equal(resolve('ssb',{gain:0, nr_gain:-12}).gain,0,'explicit zero override
 assert.equal(resolve('ssb',{gain:0, nr_gain:-12}).nr_gain,-12);
 assert.equal(resolve('ssb',{gain:null}).gain,1,'legacy null must be treated as unset');
 assert.equal(resolve('ssb',{nr_speech_mode:false}).nr_speech_mode,false);
+assert.equal(resolve('cw',{mode:'ssb'}).mode,'cw','saved profile must not override live mode');
+vm.runInContext("mode='am';settings={gain:0.5};enabled.eq=true;enabled.nr=true;",ctx);
+const withFlags=currentSettings();
+assert.equal(withFlags.mode,'am','changing receiver mode must update public mode');
+assert.equal(withFlags.gain,0.5,'saved user gain override must survive');
+assert.equal(withFlags.eq,true,'public EQ state must match active module');
+assert.equal(withFlags.nr,true,'public NR state must match active module');
+assert.equal(withFlags.comp,false,'disabled modules must report false');
+vm.runInContext("enabled.eq=false;enabled.nr=false;settings={};",ctx);
 
 // Execute the actual makeSlider function with a fake DOM, not a duplicate UI implementation.
 const formatValue = segment('  function formatValue(', '  function setKnobRotation(');
