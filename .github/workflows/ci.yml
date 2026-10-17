@@ -16,3 +16,5 @@ jobs:
         run: node tests/validate.cjs
       - name: UI and DSP default synchronization
         run: node tests/validate-defaults.cjs
+      - name: Receiver modulation detection
+        run: node tests/validate-mode-detection.cjs
