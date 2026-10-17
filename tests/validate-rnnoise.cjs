@@ -62,11 +62,16 @@ function settings(engine='rnnoise'){
  assert(x.events.some(e=>e.type==='rnnoise-state'&&e.state==='ready'));
  // Check 10 ms frame buffering, byte-pointer and float PCM scaling.
  const bridge=p.bridge,outputs=[];
- for(let i=0;i<960;i++)outputs.push(bridge.sample(.125));
+ for(let i=0;i<960;i++)outputs.push(bridge.sample(.125,1));
  assert.equal(x.fake.stats().calls,2,'RNNoise must process exactly two 480-sample frames');
  assert(outputs.slice(0,480).every(v=>v===0),'Initial neural buffer must be silent');
  assert(outputs.slice(480,960).some(v=>v>0.06),'Neural output must normalize PCM back to [-1,1]');
  assert(outputs.every(Number.isFinite));
+ // At a 50% wet mix, RNNoise output and delayed reference must align.
+ bridge.reset();const partial=[];
+ for(let i=0;i<960;i++)partial.push(bridge.sample(.125,.5));
+ assert(partial.slice(480).every(v=>Math.abs(v-.09375)<1e-5),
+   'Strength mix must combine aligned dry and neural samples without comb filtering');
  p.port.onmessage({data:{type:'settings',value:settings('classic')}});
  assert.equal(p.activeRnnoise,false);
  assert.equal(p.engine.settings.nr,true,'Classical NR must resume on selector change');
@@ -81,6 +86,9 @@ function settings(engine='rnnoise'){
  missing.processor.process([input],[output]);
  assert(output[0].every(Number.isFinite),'Fallback must produce finite audio');
  // 44.1 kHz / unsupported content: original spectral path, not RNNoise.
+ p.port.onmessage({data:{type:'settings',value:{...settings(),nr_snr:0}}});
+ assert.equal(p.activeRnnoise,false,'Strength 0 must bypass neural processing');
+ assert.equal(p.engine.settings.nr,true);
  const unsupported=await makeProcessor(44100,true);
  unsupported.processor.port.onmessage({data:{type:'settings',value:settings()}});
  await new Promise(resolve=>setImmediate(resolve));
