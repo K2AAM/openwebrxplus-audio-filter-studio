@@ -772,6 +772,77 @@
   function updateToggles(){if(!panel)return;for(const flag of Object.keys(enabled)){
     const el=panel.querySelector(`[data-af-flag="${flag}"]`);if(el){el.classList.toggle('on',enabled[flag]);el.setAttribute('aria-pressed',String(enabled[flag]));}
   }updateCompareUI();}
+  // Temporary A/B state: never saved and never changes the audio graph.
+  function updateCompareUI(message){
+    if(!panel)return;
+    const button=panel.querySelector('#af2-compare');
+    const match=panel.querySelector('#af2-match');
+    const hint=panel.querySelector('#af2-compare-info');
+    if(button){
+      button.disabled=!enabled.nr||compareCalibrating;
+      button.textContent=compareReference?'A/B: REFERENCE':'A/B: PROCESSED';
+      button.setAttribute('aria-pressed',String(compareReference));
+    }
+    if(match){
+      match.disabled=!enabled.nr||compareCalibrating;
+      match.textContent=compareCalibrating?'Measuring…':'Match levels';
+    }
+    if(hint){
+      const db=20*Math.log10(compareGain);
+      hint.textContent=message||(enabled.nr?
+        (compareReference?'Reference · NR off; other DSP unchanged':
+          'Processed · NR on')+
+        ' · level match '+(db>=0?'+':'')+db.toFixed(1)+' dB':
+        'Enable NR to compare; other DSP stays unchanged');
+    }
+  }
+  function toggleCompare(){
+    if(!enabled.nr||compareCalibrating)return;
+    compareReference=!compareReference;syncSettings();
+  }
+  function delay(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+  async function calibrateCompare(){
+    if(!enabled.nr||compareCalibrating)return;
+    const r=[...routes].find(x=>x.working&&x.output&&
+      typeof x.output.getFloatTimeDomainData==='function');
+    if(!r){updateCompareUI('Level match requires an active DSP route');return;}
+    const savedReference=compareReference,savedGain=compareGain;
+    const modeAtStart=mode,settingsAtStart=currentDSPSettings();
+    compareCalibrating=true;compareGain=1;
+    const buffer=new Float32Array(r.output.fftSize);
+    const power=async()=>{
+      let sum=0,count=0;
+      await delay(200); // worklet message and overlap-add settle
+      for(let j=0;j<12;j++){
+        if(destroyed||!routes.has(r)||!r.working||mode!==modeAtStart||
+           !enabled.nr||settingsAtStart.nr_snr!==currentDSPSettings().nr_snr)
+          throw Error('Receiver settings or audio route changed during level match');
+        r.output.getFloatTimeDomainData(buffer);
+        for(let i=0;i<buffer.length;i++)sum+=buffer[i]*buffer[i];
+        count+=buffer.length;
+        await delay(75);
+      }
+      return sum/count;
+    };
+    try{
+      compareReference=true;syncSettings();
+      updateCompareUI('Measuring reference (no NR)…');
+      const referencePower=await power();
+      compareReference=false;syncSettings();
+      updateCompareUI('Measuring processed NR…');
+      const processedPower=await power();
+      if(!(referencePower>1e-10&&processedPower>1e-10))
+        throw Error('Audio too quiet for level match');
+      // Fixed, bounded RMS adjustment; not a true speech-loudness model.
+      // Reference and processed samples are gathered sequentially.
+      compareGain=Math.max(0.5,Math.min(2,Math.sqrt(referencePower/processedPower)));
+    }catch(e){
+      compareGain=savedGain;
+      errorLog(e,'NR level match');
+    }finally{
+      compareReference=savedReference;compareCalibrating=false;syncSettings();
+    }
+  }
   function renderSpectrum(){
     if(!canvas||destroyed||!panel||panel.offsetWidth===0)return;
     const width=Math.max(200,Math.floor(canvas.clientWidth*devicePixelRatio)),height=Math.max(100,Math.floor(185*devicePixelRatio));
