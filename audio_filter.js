@@ -29,7 +29,7 @@
   'use strict';
   const ID = 'audio_filter';
   const BUILD = 'studio-2.0.0'; // retain compatibility with existing init.js
-  const REVISION = '2.2.0-beta.1';
+  const REVISION = '2.2.0-beta.2';
   const STORAGE = 'openwebrx-audio-filter-';
   if (window.AudioFilterPlugin && window.AudioFilterPlugin.build === BUILD) return;
 
@@ -42,6 +42,7 @@
       highpassFreq:150,lowpassFreq:2800,peakingFreq:1450,peakingQ:0.85,peakingGain:0,
       gain:1,airFreq:3600,airGain:0,loudness:false,loudnessGain:0,
       nr_alpha:0.975,nr_snr:8,nr_gain:0,nr_comb:0.2,nr_speech_mode:true,nr_character:0.35,
+      nr_body:0,nr_ab_reference:false,nr_ab_gain:1,
       agcTarget:0.32,maxBoost:8,gateThresh:0.008,hangTime:0.18,recoveryTime:0.45,
       compGain:1,compHPF:150,compLPF:3000,notchQ:35,maxNotches:2});
     class Biquad {
@@ -262,6 +263,16 @@
             const region=Math.max(this.nrSpeechProb[k],0.72*near1,0.42*near2);
             target+=(1-target)*protection*region;
 
+            // SSB voice body: preserve detected 200-950 Hz speech regions
+            // rather than boosting the low-frequency noise floor. Unlike
+            // EQ, this only reduces NR attenuation when speech is likely.
+            if(p.mode==='ssb'&&p.nr_body>0){
+              const hz=k*this.rate/this.N;
+              const shape=Math.max(0,1-Math.abs(hz-575)/375);
+              const body=Math.min(1,Math.max(0,p.nr_body));
+              target+=(1-target)*0.40*body*shape*region;
+            }
+
             // Keep the original tonal guard; region protection also
             // helps broader formants spanning adjacent FFT bins.
             if(p.nr_comb>0&&k>0&&k<bins-1){
@@ -289,6 +300,9 @@
             if(this.nrHistoryCount<this.nrHistorySize)this.nrHistoryCount++;
             this.nrWindowAge=0;
           }
+          // A/B reference keeps the SAME estimator running, but does not
+          // attenuate FFT bins. No reset or new processor/audio route.
+          if(!p.nr_ab_reference){
           const amp=Math.pow(10,Math.max(-12,Math.min(12,p.nr_gain))/20);
           for(let k=0;k<bins;k++){
             let gain=this.gains[k];
@@ -299,6 +313,7 @@
             if(k>0&&k<bins-1){
               this.real[n-k]*=gain;this.imag[n-k]*=gain;
             }
+          }
           }
         }
         this.fft(true);
@@ -338,7 +353,11 @@
           this.compGain+=(desired-this.compGain)*k;
           y=Math.tanh(y*this.compGain)*(p.compGain||1);
         }
-        const out=y*Math.max(0,Math.min(3,p.gain));
+        // Transient calibrated NR A/B gain applies only to the processed
+        // side. Ordinary playback and strength-zero bypass remain unchanged.
+        const compareGain=p.nr&&p.nr_snr>0&&!p.nr_ab_reference?
+          Math.max(0.5,Math.min(2,p.nr_ab_gain||1)):1;
+        const out=y*Math.max(0,Math.min(3,p.gain))*compareGain;
         return Math.max(-1,Math.min(1,Number.isFinite(out)?out:0));
       }
     }
@@ -359,7 +378,7 @@
   // change on explicit selection, never on automatic modulation switching.
   const listeningPresets={
     ssb:[
-      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:200,lowpassFreq:2750,peakingFreq:1650,peakingGain:2.5,nr_snr:19,nr_alpha:0.965,nr_comb:0.3,nr_speech_mode:true,nr_character:0.45},flags:{eq:true,nr:true,comp:false}},
+      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:26,nr_alpha:0.970,nr_comb:0.25,nr_speech_mode:true,nr_character:0.80,nr_body:0.65},flags:{eq:true,nr:true,comp:false}},
       {id:'wide-ssb',label:'Wide SSB',params:{highpassFreq:85,lowpassFreq:4000,peakingFreq:1500,peakingGain:0,nr_snr:6},flags:{eq:true,nr:false}}
     ],
     am:[
@@ -376,6 +395,7 @@
   const enabled={eq:false,nb:false,nr:false,notch:false,comp:false,loudness:false};
   let settingsStore={};
   let mode='ssb', settings={}, initialized=false, destroyed=false, userDisabled=false;
+  let compareReference=false,compareGain=1,compareCalibrating=false;
   let windowNode=null, panel=null, statusEl=null, ledEl=null, canvas=null, canvasCtx=null;
   const routes=new Set(), errors=[], observedSources=new Set();
   let interceptCount=0, animationId=0, pollingId=0, watchdogId=0, workletUrl=null;
@@ -431,7 +451,8 @@
     // sent to both DSP engines, including live modulation and global toggles.
     return Object.assign({},resolveModeSettings(),{
       mode,eq:enabled.eq,nb:enabled.nb,nr:enabled.nr,notch:enabled.notch,
-      comp:enabled.comp,loudness:enabled.loudness
+      comp:enabled.comp,loudness:enabled.loudness,
+      nr_ab_reference:compareReference&&enabled.nr,nr_ab_gain:compareGain
     });
   }
   function readReceiverMode(){
@@ -672,7 +693,8 @@
     ['recoveryTime','AGC recovery',0.08,2,0.02,' s'],['compGain','Comp output',0.1,2,0.05,'×'],
     ['notchQ','Notch Q',10,80,1,''],['maxNotches','Max notches',0,2,1,''],
     ['nr_gain','NR output gain',-12,12,1,' dB'],['nr_comb','NR tonal guard',0,1,0.05,''],
-    ['nr_character','NR Character',0,1,0.05,'']
+    ['nr_character','NR Character',0,1,0.05,''],
+    ['nr_body','SSB voice body',0,1,0.05,'']
   ];
   const css=`
     .af2{font:12px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;color:#dfe6ee;background:linear-gradient(160deg,#1b242e,#111923);padding:12px;border-radius:9px;max-width:660px;min-width:330px;box-sizing:border-box;}
@@ -790,7 +812,7 @@
       <canvas id="af2-spectrum" aria-label="Input and output audio spectrum"></canvas>
       <div class="af2-line"><span>● Input &nbsp; <span style="color:#48bfe8">● Output</span></span><span id="af-studio-meta">Awaiting receiver audio route</span></div>
       <div class="af2-controls" id="af2-quick"></div><section class="af2-advanced" id="af2-advanced"><div class="af2-grid" id="af2-advanced-grid"></div></section>
-      <div class="af2-bottom"><span>Studio 2.2 beta · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
+      <div class="af2-bottom"><span>Studio 2.2 beta.2 · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addWindow==='function'){
       try{windowNode=Plugins.addWindow(ID,'Audio Filter Studio',markup);}catch(e){errorLog(e,'Plugins.addWindow');}
     }
