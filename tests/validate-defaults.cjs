@@ -16,7 +16,7 @@ const presets = segment('  const presets={', '  const persistentKeys=');
 const resolver = segment('  function cleanProfile(', '  function readReceiverMode(');
 const sliderMeta = segment('  const sliders=[', '  const css=`');
 const ctx=vm.createContext({ Float32Array, Uint16Array, Math, Number, Object, Array, console });
-vm.runInContext(`${dsp}\nconst DSPCore=createDSPCore();\n${presets}\nlet mode='ssb', settings={}, enabled={eq:false,nb:false,nr:false,notch:false,comp:false,loudness:false};\n${resolver}\n${sliderMeta}`,ctx);
+vm.runInContext(`${dsp}\nconst DSPCore=createDSPCore();\n${presets}\nlet mode='ssb', settings={}, compareReference=false, compareGain=1, enabled={eq:false,nb:false,nr:false,notch:false,comp:false,loudness:false};\n${resolver}\n${sliderMeta}`,ctx);
 const resolve = vm.runInContext('resolveModeSettings',ctx);
 const currentSettings = vm.runInContext('currentDSPSettings',ctx);
 const DSPCore = vm.runInContext('DSPCore',ctx);
@@ -28,6 +28,9 @@ assert.equal(defaults.gain,1);
 assert.equal(defaults.nr_gain,0);
 assert.equal(defaults.maxBoost,8);
 assert.equal(defaults.nr_comb,0.2);
+assert.equal(defaults.nr_body,0);
+assert.equal(defaults.nr_ab_reference,false);
+assert.equal(defaults.nr_ab_gain,1);
 assert.equal(defaults.agcTarget,0.32);
 for(const mode of modes){
  const actual=resolve(mode,{});
@@ -60,6 +63,12 @@ assert.equal(withFlags.mode,'am','changing receiver mode must update public mode
 assert.equal(withFlags.gain,0.5,'saved user gain override must survive');
 assert.equal(withFlags.eq,true,'public EQ state must match active module');
 assert.equal(withFlags.nr,true,'public NR state must match active module');
+vm.runInContext('compareReference=true;compareGain=1.7;',ctx);
+const compare=currentSettings();
+assert.equal(compare.nr,true,'A/B reference must not flip saved NR enabled flag');
+assert.equal(compare.nr_ab_reference,true,'A/B reference must reach worklet settings');
+assert.equal(compare.nr_ab_gain,1.7,'A/B calibrated gain must reach worklet settings');
+vm.runInContext('compareReference=false;compareGain=1;',ctx);
 assert.equal(withFlags.comp,false,'disabled modules must report false');
 vm.runInContext("enabled.eq=false;enabled.nr=false;settings={};",ctx);
 
