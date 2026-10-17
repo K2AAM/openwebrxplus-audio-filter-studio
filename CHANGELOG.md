@@ -2,6 +2,8 @@
 
 ## Unreleased — beta.2 candidate
 
+- Detect AM/CW/USB/LSB and other modes from OpenWebRX+'s actual jQuery DemodulatorPanel (`#openwebrx-panel-receiver`), rather than stale or incompatible selectors; include its highlighted mode buttons as a fallback and avoid lazily creating the receiver panel before initialization.
+
 - Fix `AudioFilterPlugin.settings().mode` always reporting `ssb` even when the receiver is in AM or CW; report the live modulation and global enabled-module states using the same effective settings sent to the DSP.
 
 - Fix Studio sliders/knobs initially displaying their minimum instead of the DSP's actual defaults (especially Output gain, NR gain, compressor boost, tonal guard and AGC target).
