@@ -552,7 +552,7 @@
           throw Error('Unexpected RNNoise WASM bundle; check installed version');
         // The upstream ESM export stays intact. Only expose its factory
         // to the EXISTING AudioWorklet processor's shared global scope.
-        return source+'\\n;globalThis.__afStudioRNNoiseFactory=createRNNWasmModuleSync;\\n';
+        return source+'\n;globalThis.__afStudioRNNoiseFactory=createRNNWasmModuleSync;\n';
       })().catch(e=>{rnnoiseSourcePromise=null;throw e;});
     }
     return rnnoiseSourcePromise;
@@ -648,6 +648,12 @@
       if(worklet){
         node.port.onmessage=e=>{
           if(e.data.type==='heartbeat')handleHeartbeat(r,e.data);
+          else if(e.data.type==='rnnoise-state'){
+            r.rnnoiseState=e.data.state;
+            rnnoiseError=e.data.state==='error'?'RNNoise failed; classical NR restored: '+String(e.data.message||'unknown'):
+              e.data.state==='ready'?'':'Loading RNNoise…';
+            updateRNNoiseUI();
+          }
           else if(e.data.type==='error'){errorLog(e.data.message,'worklet');bypass(r,'ERROR');}
         };
         const onerror=()=>{errorLog('AudioWorklet processorerror','worklet');bypass(r,'ERROR');};
@@ -728,11 +734,12 @@
     return {detach:()=>detachRoute(route),status:()=>routeStatus(route)};
   }
   function routeStatus(r){return {kind:r.kind,live:r.working,mode:r.mode,contextState:r.context.state,
-    sampleRate:r.context.sampleRate,worklet:r.worklet,processor:r.processor?(r.worklet?'AudioWorklet':'ScriptProcessor'):'none',
+    sampleRate:r.context.sampleRate,rnnoiseState:r.rnnoiseState||'not-loaded',worklet:r.worklet,processor:r.processor?(r.worklet?'AudioWorklet':'ScriptProcessor'):'none',
     interceptedConnections:interceptCount,heartbeats:r.heartbeat,processedSamples:r.samples,nonzeroInputSamples:r.nonzero,
     lastHeartbeatMs:r.lastHeartbeat?Date.now()-r.lastHeartbeat:null,latencyMs:1000*((r.context.sampleRate>=32000?512:256)-1)/r.context.sampleRate};}
   function status(){const all=[...routes].map(routeStatus);const active=all.some(r=>r.live&&r.lastHeartbeatMs!==null&&r.lastHeartbeatMs<2200);
     return {build:BUILD,revision:REVISION,initialized,disabled:userDisabled,dspLive:active,routeCount:routes.size,
+      nrEngine:currentDSPSettings().nr_engine,rnnoiseError,
       interceptedConnections:interceptCount,mode,engine:all.some(r=>r.processor==='AudioWorklet')?'AudioWorklet':all.some(r=>r.processor==='ScriptProcessor')?'ScriptProcessor':'none',
       sampleRate:all[0]?.sampleRate||null,contextState:all[0]?.contextState||'none',routes:all,errors:errors.slice()};}
   function renderStatus(){if(!statusEl)return;const s=status(),a=s.routes.find(r=>r.live),r=s.routes[0];
@@ -787,6 +794,9 @@
     .af2-bottom button{padding:4px 8px;font-size:10px}.af2 .af2-fail{color:#e6bc62}
     .af2-compare{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:9px}.af2-compare button{padding:6px 10px}
     .af2-compare-info{font-size:10px;color:#91a7b9;min-width:210px}
+    .af2-rnnoise{display:flex;flex-direction:column;gap:5px;margin:8px 0;color:#aebfd1;font-size:11px}
+    .af2-rnnoise select{background:#1b2938;color:#e2edf4;border:1px solid #41566b;padding:6px;border-radius:5px}
+    .af2-rnnoise-note{font-size:10px;color:#91a7b9;line-height:1.4}
     @media(max-width:470px){.af2-controls{grid-template-columns:repeat(2,1fr)}.af2{min-width:280px}.af2-buttons{grid-template-columns:repeat(3,1fr)}}
   `;
   function formatValue(v,unit){return (v<1?Number(v).toFixed(3):v<10?Number(v).toFixed(2):Math.round(v))+unit;}
@@ -831,12 +841,12 @@
   }
     const speech=panel&&panel.querySelector('#af2-speech-preservation');
     if(speech)speech.checked=resolved.nr_speech_mode!==false;
-    refreshPresetSelector();
+    refreshPresetSelector();updateRNNoiseUI();
   }
 
   function updateToggles(){if(!panel)return;for(const flag of Object.keys(enabled)){
     const el=panel.querySelector(`[data-af-flag="${flag}"]`);if(el){el.classList.toggle('on',enabled[flag]);el.setAttribute('aria-pressed',String(enabled[flag]));}
-  }updateCompareUI();}
+  }updateCompareUI();updateRNNoiseUI();}
   // Temporary A/B state: never saved and never changes the audio graph.
   function updateCompareUI(message){
     if(!panel)return;
@@ -844,12 +854,12 @@
     const match=panel.querySelector('#af2-match');
     const hint=panel.querySelector('#af2-compare-info');
     if(button){
-      button.disabled=!enabled.nr||compareCalibrating;
+      button.disabled=!enabled.nr||compareCalibrating||currentDSPSettings().nr_engine==='rnnoise';
       button.textContent=compareReference?'A/B: REFERENCE':'A/B: PROCESSED';
       button.setAttribute('aria-pressed',String(compareReference));
     }
     if(match){
-      match.disabled=!enabled.nr||compareCalibrating;
+      match.disabled=!enabled.nr||compareCalibrating||currentDSPSettings().nr_engine==='rnnoise';
       match.textContent=compareCalibrating?'Measuring…':'Match levels';
     }
     if(hint){
@@ -862,12 +872,12 @@
     }
   }
   function toggleCompare(){
-    if(!enabled.nr||compareCalibrating)return;
+    if(!enabled.nr||compareCalibrating||currentDSPSettings().nr_engine==='rnnoise')return;
     compareReference=!compareReference;syncSettings();
   }
   function delay(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
   async function calibrateCompare(){
-    if(!enabled.nr||compareCalibrating)return;
+    if(!enabled.nr||compareCalibrating||currentDSPSettings().nr_engine==='rnnoise')return;
     const r=[...routes].find(x=>x.working&&x.output&&
       typeof x.output.getFloatTimeDomainData==='function');
     if(!r){updateCompareUI('Level match requires an active DSP route');return;}
@@ -953,7 +963,7 @@
       <div class="af2-line"><span>● Input &nbsp; <span style="color:#48bfe8">● Output</span></span><span id="af-studio-meta">Awaiting receiver audio route</span></div>
       <div class="af2-compare"><button type="button" id="af2-compare" aria-pressed="false">A/B: PROCESSED</button><button type="button" id="af2-match">Match levels</button><span id="af2-compare-info" class="af2-compare-info">Enable NR to compare</span></div>
       <div class="af2-controls" id="af2-quick"></div><section class="af2-advanced" id="af2-advanced"><div class="af2-grid" id="af2-advanced-grid"></div></section>
-      <div class="af2-bottom"><span>Studio 2.2 beta.2 · Browser DSP</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
+      <div class="af2-bottom"><span>Studio 2.3 beta.1 · Experimental RNNoise</span><span><button type="button" id="af2-export">Export</button> <button type="button" id="af2-import">Import</button> <button type="button" id="af2-bypass">Bypass</button> <button type="button" id="af2-reset">Reset mode</button></span></div></div>`;
     if(typeof window.Plugins!=='undefined'&&typeof Plugins.addWindow==='function'){
       try{windowNode=Plugins.addWindow(ID,'Audio Filter Studio',markup);}catch(e){errorLog(e,'Plugins.addWindow');}
     }
@@ -962,6 +972,20 @@
     if(!panel){const shell=document.createElement('div');shell.style.cssText='position:fixed;top:15%;left:3%;z-index:10000;display:none;box-shadow:0 12px 40px #0009;max-width:94vw';shell.innerHTML=markup;document.body.appendChild(shell);panel=shell.querySelector('#af-studio-2');}
     statusEl=panel.querySelector('#af2-status');ledEl=panel.querySelector('#af2-led');canvas=panel.querySelector('#af2-spectrum');canvasCtx=canvas.getContext('2d');
     const quick=panel.querySelector('#af2-quick'),adv=panel.querySelector('#af2-advanced-grid');
+    const engineControl=document.createElement('label');engineControl.className='af2-rnnoise';
+    engineControl.textContent='NR engine (voice experiment)';
+    const engineSelect=document.createElement('select');engineSelect.id='af2-nr-engine';
+    for(const [value,label] of [['classic','Classical spectral (recommended)'],['rnnoise','RNNoise WASM · experimental speech only']]){
+      const option=document.createElement('option');option.value=value;option.textContent=label;engineSelect.appendChild(option);
+    }
+    const engineNote=document.createElement('span');engineNote.id='af2-rnnoise-note';engineNote.className='af2-rnnoise-note';
+    engineControl.append(engineSelect,engineNote);
+    panel.querySelector('#af2-advanced').prepend(engineControl);
+    listen(engineSelect,'change',()=>{
+      compareReference=false;compareGain=1;rnnoiseError='';
+      if(engineSelect.value==='rnnoise'&&!enabled.nr){enabled.nr=true;safeStorageSet(STORAGE+persistentKeys.nr,'true');}
+      updateParameter('nr_engine',engineSelect.value);
+    });
     for(let i=0;i<sliders.length;i++){(i<4?quick:adv).appendChild(makeSlider(sliders[i],i>=4));}
     listen(panel.querySelector('#af2-preset'),'change',e=>applyListeningPreset(e.currentTarget.value));
     listen(panel.querySelector('#af2-compare'),'click',toggleCompare);
@@ -979,7 +1003,10 @@
       input.onchange=async()=>{try{const file=input.files&&input.files[0];if(!file)return;const obj=JSON.parse(await file.text());
         const incoming=obj.profiles||obj;if(!incoming||typeof incoming!=='object')throw Error('Invalid settings file');
         for(const [key,value] of Object.entries(incoming)){if(!presets[key]||!value||typeof value!=='object')continue;
-          const profile={};for(const [param,val] of Object.entries(value)){if(typeof val==='number'&&Number.isFinite(val)||typeof val==='boolean')profile[param]=val;}
+          const profile={};for(const [param,val] of Object.entries(value)){
+            if(param==='nr_engine'&&(val==='classic'||val==='rnnoise'))profile[param]=val;
+            else if(typeof val==='number'&&Number.isFinite(val)||typeof val==='boolean')profile[param]=val;
+          }
           settingsStore[key]=profile;
         }
         if(obj.enabled&&typeof obj.enabled==='object')for(const flag of Object.keys(enabled)){if(typeof obj.enabled[flag]==='boolean'){enabled[flag]=obj.enabled[flag];safeStorageSet(STORAGE+persistentKeys[flag],String(enabled[flag]));}}
