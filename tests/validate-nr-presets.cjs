@@ -54,6 +54,19 @@ for(const sampleRate of [22050,48000,96000]){
  p.setSettings({nr:true,mode:'am',nr_snr:20}); // retune must reset estimator
  assert.equal(p.nrHistoryCount,0,'Modulation switch must reset stale noise history');
 }
+// The estimator must recover from a large noise-floor increase (e.g. retuning).
+{
+ const p=new DSPCore(rate);
+ p.setSettings({nr:true,eq:false,comp:false,nr_snr:18,nr_alpha:.975});
+ let rng=42;
+ const update=()=>{rng=(1664525*rng+1013904223)>>>0;return rng/4294967296*2-1;};
+ for(let i=0;i<rate;i++)p.process(update()*.016);
+ const before=p.noise[36];
+ for(let i=0;i<rate*2;i++)p.process(update()*.14);
+ const after=p.noise[36];
+ assert(before>0&&after>before*2.5,`Noise floor failed to relearn after a strong band change: ${before} -> ${after}`);
+ console.log('NR noise-floor reacquisition passed:',before.toFixed(5),'->',after.toFixed(5));
+}
 // Exercise the actual browser preset functions in a small VM harness.
 const profileFns=section('  function cleanProfile(', '  // Store only user overrides');
 const modeData=section('  const presets={','  const persistentKeys=');
