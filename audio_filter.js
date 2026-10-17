@@ -378,7 +378,7 @@
   // change on explicit selection, never on automatic modulation switching.
   const listeningPresets={
     ssb:[
-      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:26,nr_alpha:0.970,nr_comb:0.25,nr_speech_mode:true,nr_character:0.80,nr_body:0.65,nr_engine:'classic'},flags:{eq:true,nr:true,comp:false}},
+      {id:'weak-dx',label:'Weak SSB / DX',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:26,nr_alpha:0.970,nr_comb:0.25,nr_speech_mode:true,nr_character:0.80,nr_body:0.65},flags:{eq:true,nr:true,comp:false}},
       {id:'weak-dx-neural',label:'Weak SSB / DX · Neural',params:{highpassFreq:130,lowpassFreq:2950,peakingFreq:1450,peakingGain:1.5,nr_snr:27,nr_gain:0,nr_engine:'rnnoise'},flags:{eq:true,nr:true,comp:false}},
       {id:'wide-ssb',label:'Wide SSB',params:{highpassFreq:85,lowpassFreq:4000,peakingFreq:1500,peakingGain:0,nr_snr:6},flags:{eq:true,nr:false}}
     ],
